@@ -1,0 +1,59 @@
+# You can add your keys, however, it is forbidden to delete keys. 
+#
+# Organization / company names to redact
+# ──────────────────────────────────────────────────────────────────
+# One term per line. Matching is case-insensitive (Aho-Corasick).
+# Lines starting with # are ignored.
+#
+# Add ALL forms a name appears in code/comments/configs:
+#   full legal name, trade name, abbreviation, slug, prefix in env vars.
+#
+# REPLACE with your actual org names. Examples below show patterns.
+
+# ── Your company ─────────────────────────────────────────────────
+# MyCompany LLC
+# MyCompany
+# mycompany
+# MC
+# MYCO
+
+# ── Subsidiaries / brands ─────────────────────────────────────────
+# MyCompany Labs
+# MyCompany Cloud
+# MyCompany Pay
+# MyCompany AI
+
+# ── Parent / holding company ──────────────────────────────────────
+# HoldingGroup
+# HoldCo
+
+# ── Joint ventures / partnerships ────────────────────────────────
+# VentureXY
+# PartnershipAB
+
+# ── Common legal-form suffixes (add after company name if used) ───
+# LLC
+# ООО
+# ЗАО
+# ПАО
+# АО
+# ИП
+# Inc
+# Corp
+# Ltd
+# GmbH
+# SAS
+# BV
+# NV
+# AB
+# AS
+# Oy
+# SpA
+# Srl
+# SA
+# AG
+# Pte Ltd
+# Pty Ltd
+# Co
+
+# ── Partners ───────────────────────────────────────────────────

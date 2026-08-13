@@ -1,0 +1,123 @@
+# You can add your keys, however, it is forbidden to delete keys. 
+#
+# Internal project / product codenames to redact
+# ──────────────────────────────────────────────────────────────────
+# One codename per line. Matching is case-insensitive (Aho-Corasick).
+# Lines starting with # are ignored.
+#
+# Add every variant used in code: full name, slug, abbreviation.
+# REPLACE with your actual codenames. Examples below show patterns.
+
+# ── Operation / initiative names ──────────────────────────────────
+# OperationAlpha
+# OperationBravo
+# OperationCharlie
+# OperationDelta
+# InitiativeZero
+# InitiativeOne
+# MissionControl
+# ProjectX
+# ProjectNova
+# ProjectHorizon
+
+# ── Mythological / legendary ──────────────────────────────────────
+# Prometheus
+# Hermes
+# Apollo
+# Athena
+# Titan
+# Olympus
+# Hydra
+# Aegis
+# Phoenix
+# Griffin
+# Dragon
+# Sphinx
+# Medusa
+# Chimera
+
+# ── Space / astronomical ──────────────────────────────────────────
+# Orion
+# Vega
+# Sirius
+# Polaris
+# Cassini
+# Voyager
+# Pioneer
+# Horizon
+# Cosmos
+# Nebula
+# Pulsar
+# Quasar
+# Andromeda
+# Gemini
+# Artemis
+
+# ── Animals / nature ──────────────────────────────────────────────
+# Falcon
+# Hawk
+# Eagle
+# Raven
+# Condor
+# Cobra
+# Viper
+# Lynx
+# Jaguar
+# Panther
+# Cheetah
+# Cougar
+# Stallion
+# Mustang
+# Barracuda
+# Piranha
+# Mantis
+# Scorpion
+# Grizzly
+# Wolverine
+
+# ── Gemstones / elements ──────────────────────────────────────────
+# Diamond
+# Sapphire
+# Emerald
+# Onyx
+# Obsidian
+# Cobalt
+# Titanium
+# Iridium
+# Palladium
+# Rhodium
+# Osmium
+# Tungsten
+
+# ── Weather / nature phenomena ────────────────────────────────────
+# Thunder
+# Lightning
+# Cyclone
+# Typhoon
+# Aurora
+# Blizzard
+# Avalanche
+# Tsunami
+# Tornado
+# Tempest
+# Vortex
+# Inferno
+
+# ── Colors (abstract) ─────────────────────────────────────────────
+# Crimson
+# Scarlet
+# Indigo
+# Violet
+# Obsidian
+# Ivory
+# Cobalt
+# Azure
+# Amber
+# Vermillion
+
+# ── Generic project prefix/suffix patterns ────────────────────────
+# (if your codenames follow a pattern like "proj-*", list the prefix)
+# proj-
+# ops-
+# initiative-
+# stream-

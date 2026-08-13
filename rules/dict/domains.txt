@@ -1,0 +1,178 @@
+# You can add your keys, however, it is forbidden to delete keys. 
+#
+# Internal / corporate domains
+# ──────────────────────────────────────────────────────────────────
+# One domain per line. Matching is case-insensitive (Aho-Corasick).
+# EndpointDetector also catches private IPs (RFC 1918) automatically.
+# Lines starting with # are ignored.
+#
+# REPLACE OR EXTEND with your actual internal domains.
+# Delete example blocks that do not apply.
+
+# ── .internal TLD ────────────────────────────────────────────────
+corp.internal
+company.internal
+prod.internal
+staging.internal
+dev.internal
+test.internal
+uat.internal
+preprod.internal
+infra.internal
+platform.internal
+api.internal
+auth.internal
+data.internal
+db.internal
+cache.internal
+queue.internal
+monitoring.internal
+logging.internal
+metrics.internal
+vault.internal
+secrets.internal
+registry.internal
+storage.internal
+media.internal
+cdn.internal
+mail.internal
+smtp.internal
+ldap.internal
+ad.internal
+
+# ── .corp TLD ─────────────────────────────────────────────────────
+mycompany.corp
+doubletapp.io
+doubletapp.ai
+services.corp
+intranet.corp
+wiki.corp
+confluence.corp
+jira.corp
+git.corp
+
+# ── .local TLD (LAN / mDNS) ──────────────────────────────────────
+dev.local
+staging.local
+db.local
+redis.local
+kafka.local
+rabbit.local
+elastic.local
+minio.local
+
+# ── .lan TLD ──────────────────────────────────────────────────────
+office.lan
+vpn.lan
+nas.lan
+backup.lan
+
+# ── Short bare hostnames (intranet DNS) ───────────────────────────
+# NOTE: these feed EndpointDetector only, which matches DOTTED domains
+# (jenkins.corp.internal) — a bare `jenkins`/`redis` no longer substring-matches
+# anywhere (that flood was removed when domains were split off the brand
+# DictionaryDetector). Kept for reference / as suffix roots.
+# CI / CD
+jenkins
+jenkins-master
+jenkins-agent
+gitlab
+gitlab-runner
+github-enterprise
+teamcity
+circleci
+argocd
+spinnaker
+tekton
+
+# Artifact / package registries
+nexus
+nexus3
+artifactory
+jfrog
+verdaccio
+pypiserver
+devpi
+
+# Code / docs
+confluence
+jira
+bitbucket
+gerrit
+gitea
+gitblit
+sonarqube
+sonar
+codacy
+
+# Observability
+grafana
+prometheus
+alertmanager
+kibana
+elasticsearch
+opensearch
+jaeger
+zipkin
+datadog-agent
+
+# Secrets / identity
+hashicorp-vault
+keycloak
+okta-agent
+ldap
+active-directory
+freeipa
+sssd
+
+# Databases
+postgres
+postgresql
+mysql
+mariadb
+mssql
+sqlserver
+mongodb
+cassandra
+redis
+rediscluster
+memcached
+dynamodb-local
+clickhouse
+druid
+
+# Message brokers
+kafka
+zookeeper
+rabbitmq
+activemq
+pulsar
+
+# Object / file storage
+minio
+ceph
+gluster
+nfs
+
+# Container / orchestration
+kubernetes
+k8s
+rancher
+docker-registry
+
+# VPN / network
+vpn
+openvpn
+wireguard
+pfsense
+
+# Email
+postfix
+dovecot
+mailhog
+mailtrap
+
+# Internal tools / portals
+intranet
+backoffice
+helpdesk

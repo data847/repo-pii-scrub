@@ -1,0 +1,7 @@
+# Scrub engine. Not published to PyPI — install from source.
+repo-sanitizer @ git+https://github.com/Fermatix/repo-sanitizer.git
+git-filter-repo>=2.45.0
+
+# Also required, installed separately (not pip-installable):
+#   gitleaks   — secret detection  (brew install gitleaks)
+#   git        — history rewriting

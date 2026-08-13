@@ -1,0 +1,102 @@
+# You can add your keys, however, it is forbidden to delete keys. 
+#
+# Client / customer names to redact
+# ──────────────────────────────────────────────────────────────────
+# One name per line. Matching is case-insensitive (Aho-Corasick).
+# Lines starting with # are ignored.
+#
+# Add every form a client name appears in code/configs/comments:
+#   - Full legal name
+#   - Short trade name
+#   - Slug / identifier used in config keys, bucket names, URLs
+#   - Abbreviation used in env var prefixes  (e.g. ACME_API_KEY)
+#
+# REPLACE with your actual client names. Examples below show patterns.
+
+# ── Enterprise / B2B clients ──────────────────────────────────────
+# Acme Corporation
+# Acme Corp
+# acme
+# ACME
+
+# GlobalTech Industries
+# GlobalTech
+# globaltech
+# GTI
+
+# NovaSoft Solutions
+# NovaSoft
+# novasoft
+# NSS
+
+# Pinnacle Group
+# Pinnacle
+# pinnacle
+
+# Vertex Systems
+# Vertex
+# vertex
+
+# ── Financial / banking sector ────────────────────────────────────
+# FirstBank
+# firstbank
+# FB
+# FB_PROD
+
+# AlphaCredit
+# alphacredit
+# AC
+
+# ── Retail / e-commerce ───────────────────────────────────────────
+# RetailCo
+# retailco
+# rc
+
+# ShopMart Inc
+# ShopMart
+# shopmart
+
+# ── Healthcare ────────────────────────────────────────────────────
+# HealthNet
+# healthnet
+# HN
+
+# MediCare Solutions
+# medicare_solutions
+# MCS
+
+# ── Telecom ───────────────────────────────────────────────────────
+# TelecomPlus
+# telecomplus
+# TCP
+
+# ── Government / public sector ────────────────────────────────────
+# GovAgency
+# govagency
+
+# ── Startup / SMB clients ─────────────────────────────────────────
+# StartupAlpha
+# startupalpha
+# alpha_client
+
+# BetaWorks
+# betaworks
+# beta
+
+# ── International clients ─────────────────────────────────────────
+# EuroClient GmbH
+# EuroClient
+# euroclient
+# EC
+
+# AsiaPacific Ltd
+# AsiaPacific
+# asiapacific
+# AP
+
+# ── Common client env-var prefixes ───────────────────────────────
+# (if a client's slug appears as a prefix in secrets, list it here)
+# client_a
+# client_b
+# tenant_001
+# tenant_002

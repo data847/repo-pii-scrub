@@ -1,0 +1,137 @@
+# Keep-list / allowlist — terms the detectors must NEVER flag.
+# ──────────────────────────────────────────────────────────────────
+# One term per line. Matching is case-insensitive. Lines starting with # are
+# ignored. This is the inverse of orgs/clients/codenames: it exempts names that
+# are NOT a leak so the tool does not mangle them (Bitrix, 1C, Yandex, Telegram,
+# private IPs) and NER does not redact universal public platforms.
+#
+# The bar is *identifiable company / person* — NOT country-of-origin. Russian
+# household services (Yandex, Sber, …) are kept exactly like Google. SCRUB the
+# partner/source studio, its specific clients, and other identifiable (esp.
+# smaller / regional) companies — list those in orgs.txt / clients.txt, NOT here.
+#
+# Seed only; extend per repo. A kept term beats the brand dictionaries.
+
+# ── Universal public platforms / SaaS ────────────────────────────
+google
+googleapis
+gmail
+youtube
+firebase
+android
+microsoft
+azure
+office365
+apple
+icloud
+amazon
+aws
+cloudflare
+github
+gitlab
+bitbucket
+atlassian
+jira
+confluence
+stripe
+paypal
+telegram
+slack
+discord
+zoom
+notion
+figma
+openai
+anthropic
+sentry
+datadog
+grafana
+prometheus
+
+# ── Widespread public services (any origin — kept like Google) ────
+# Russian household platforms — KEEP (not a source-identifying leak).
+yandex
+ya.ru
+sber
+sberbank
+sbermegamarket
+tinkoff
+ozon
+wildberries
+vk
+vkontakte
+mail.ru
+gosuslugi
+esia
+dadata
+cdek
+boxberry
+pickpoint
+2gis
+yookassa
+yoomoney
+robokassa
+avito
+
+# ── OSS frameworks / libraries (the app is built ON these) ────────
+laravel
+symfony
+django
+flask
+fastapi
+spring
+springboot
+hibernate
+rails
+react
+reactjs
+vue
+vuejs
+angular
+svelte
+nextjs
+nuxt
+express
+nestjs
+dotnet
+aspnet
+flutter
+kotlin
+jetpack
+bootstrap
+tailwind
+jquery
+webpack
+vite
+
+# ── The application's own platform / CMS (renaming wrecks coherence) ──
+bitrix
+1c
+1с
+wordpress
+drupal
+joomla
+opencart
+magento
+shopify
+woocommerce
+moodle
+
+# ── Datastores / infra (generic technology, names no one) ─────────
+postgres
+postgresql
+mysql
+mariadb
+mongodb
+redis
+clickhouse
+elasticsearch
+opensearch
+rabbitmq
+kafka
+nginx
+apache
+docker
+kubernetes
+keycloak
+vault

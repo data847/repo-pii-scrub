@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.salt
+tokens
+
+# Run artifacts and generated fixtures
+outputs/
+fixtures/
+clones/
+
+# Local toolchain
+.venv/
+.tools/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
