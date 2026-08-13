@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end pipeline verification against the PII fixture repo.
 
-Runs the same `pipeline_repo` the org batches use (normal mode: sanitize + gates +
-LLM review + trim + verify + package), then asserts that not one planted PII value
-survives in the deliverable.
-
-Defaults to --history-pct 100 so the deliverable keeps every commit — that makes
-the leak scan cover the whole history instead of only the 5% slice.
+Runs the same `pipeline_repo` the org batches use (clone + sanitize + brand-map +
+package), then asserts that not one planted PII value survives in the deliverable.
+Full history is delivered, so the leak scan covers every commit.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from batch_env import build_env, env_file, worker_env_from  # noqa: E402
+from batch_env import build_env, worker_env_from  # noqa: E402
 from ner_service_manager import NerService  # noqa: E402
 from run_batch import pipeline_repo  # noqa: E402
 
@@ -55,7 +52,7 @@ def build_fixture(dest: Path, manifest: Path, filler: int) -> dict:
     return json.loads(proc.stdout)
 
 
-def init_run(run_dir: Path, run_id: str, slug: str, source: Path, history_pct: int, env: dict) -> None:
+def init_run(run_dir: Path, run_id: str, slug: str, source: Path, env: dict) -> None:
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
@@ -68,8 +65,6 @@ def init_run(run_dir: Path, run_id: str, slug: str, source: Path, history_pct: i
             slug,
             "--source",
             str(source),
-            "--history-pct",
-            str(history_pct),
         ],
         env=env,
         capture_output=True,
@@ -93,7 +88,6 @@ def main() -> int:
     p.add_argument("--slug", default="pii-fixture-repo")
     p.add_argument("--batch-id", default="_verification")
     p.add_argument("--filler", type=int, default=300, help="Filler modules in the fixture")
-    p.add_argument("--history-pct", type=int, default=100, help="History kept in the deliverable")
     p.add_argument("--ner-device", default="cpu")
     p.add_argument("--ner-port", type=int, default=8765)
     p.add_argument("--ner-scope", default="head", choices=("head", "all", "off"))
@@ -125,9 +119,6 @@ def main() -> int:
     env = build_env()
     if not env.get("REPO_SANITIZER_SALT"):
         log("ERROR: REPO_SANITIZER_SALT missing (.salt file)")
-        return 1
-    if not env.get("ANTHROPIC_API_KEY"):
-        log("ERROR: ANTHROPIC_API_KEY missing — the normal-mode LLM gate needs it")
         return 1
 
     env["PII_SCRUB_NER_SCOPE"] = args.ner_scope
@@ -162,24 +153,15 @@ def main() -> int:
 
     started = time.time()
     try:
-        init_run(
-            run_dir,
-            f"{args.batch_id}/{args.slug}",
-            args.slug,
-            fixture,
-            args.history_pct,
-            env,
-        )
-        log(f"Running normal-mode pipeline (history_pct={args.history_pct})...")
+        init_run(run_dir, f"{args.batch_id}/{args.slug}", args.slug, fixture, env)
+        log("Running normal-mode pipeline (full history)...")
         result = pipeline_repo(
             args.slug,
             fixture,
             batch_id=args.batch_id,
             batch_root=batch_root,
             env=worker_env_from(env),
-            skip_llm=False,
             fast=False,
-            env_file=env_file(),
             brand_terms=args.brand_term,
         )
     finally:
@@ -220,10 +202,10 @@ def main() -> int:
             )
         )
 
-    llm = run_dir / "llm_review.json"
-    if llm.is_file():
-        review = json.loads(llm.read_text())
-        log(f"\nLLM privacy review: {review.get('verdict')} — {review.get('summary', '')[:300]}")
+    secret_scan = run_dir / "gitleaks.json"
+    if secret_scan.is_file():
+        hits = json.loads(secret_scan.read_text())
+        log(f"\nIndependent secret scan (gitleaks): {len(hits)} real finding(s)")
 
     ok = code_repo == 0 and code_zip == 0
     log("\n" + ("=" * 60))

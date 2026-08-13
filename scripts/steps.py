@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -13,6 +12,10 @@ from pathlib import Path
 
 
 DEFAULT_STEP_TIMEOUT = 7200
+
+# What the sanitizer substitutes for a secret. The digest is high-entropy, so
+# gitleaks flags every placeholder; the post-trim gate filters these out.
+PLACEHOLDER_SECRET = re.compile(r"REDACTED_[0-9a-f]{6,}")
 
 
 def step_timeout() -> int | None:
@@ -146,20 +149,35 @@ def record_baseline(repo: Path, work_root: Path) -> dict:
     return {"commits_before": int(total), "head_before": head}
 
 
-def scan_pre(source: Path, rulepack: Path, out: Path, *, fast: bool = False) -> None:
+def scan_pre(source: Path, rulepack: Path, out: Path, *, fast: bool = False) -> int:
+    """Read-only pre-scan. Returns the finding count.
+
+    `repo-sanitizer scan` exits non-zero simply to signal "findings exist", which
+    is the normal case for any real repo, so a written report counts as success.
+    """
     out.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "repo-sanitizer",
-            "scan",
-            str(source),
-            "--rulepack",
-            str(rulepack),
-            "--out",
-            str(out),
-            *_sanitizer_fast_args(fast),
-        ]
-    )
+    cmd = [
+        "repo-sanitizer",
+        "scan",
+        str(source),
+        "--rulepack",
+        str(rulepack),
+        "--out",
+        str(out),
+        *_sanitizer_fast_args(fast),
+    ]
+    report = out / "artifacts" / "scan_report_pre.json"
+    try:
+        run(cmd)
+    except RuntimeError:
+        if not report.is_file():
+            raise
+    if not report.is_file():
+        return 0
+    try:
+        return len(json.loads(report.read_text()))
+    except (OSError, json.JSONDecodeError):
+        return 0
 
 
 def sanitize(source: Path, rulepack: Path, out: Path, *, fast: bool = False) -> list[str]:
@@ -336,199 +354,68 @@ def load_result_json(sanitized_out: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def build_llm_sample(clean: Path, work_root: Path, *, max_files: int = 60) -> Path:
+def assert_no_secrets(clean: Path, work_root: Path) -> int:
+    """Fail if gitleaks finds a real secret in the deliverable. Returns hits ignored.
+
+    An independent second opinion on the sanitizer's own gates, and cheap enough
+    (~0.2s) to run unconditionally before packaging.
+
+    The sanitizer's placeholders are high-entropy, so gitleaks reports every one
+    as a generic-api-key. Those are filtered out by value, which means the scan
+    must run unredacted; the raw report is deleted immediately afterwards so only
+    a redacted summary is kept on disk.
+    """
+    clean = clean.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
-    sample_list = work_root / "llm_sample_files.txt"
-    paths: list[str] = []
-
-    doc_patterns = ("*.md", "*.env*", "*.yaml", "*.yml", "*.json", "*.sql", "*.txt", "*.log")
-    for pattern in doc_patterns:
-        for fp in clean.glob(f"**/{pattern}"):
-            if ".git" in fp.parts or "node_modules" in fp.parts or "vendor" in fp.parts:
-                continue
-            paths.append(str(fp.relative_to(clean)))
-            if len(paths) >= 40:
-                break
-        if len(paths) >= 40:
-            break
-
-    code_exts = {".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rb", ".php", ".cs", ".kt"}
-    code_files = [
-        p
-        for p in clean.rglob("*")
-        if p.is_file()
-        and p.suffix in code_exts
-        and ".git" not in p.parts
-        and "node_modules" not in p.parts
-        and "vendor" not in p.parts
-    ]
-    random.shuffle(code_files)
-    for fp in code_files[:20]:
-        paths.append(str(fp.relative_to(clean)))
-
-    sample_list.write_text("\n".join(paths[:max_files]) + "\n")
-
-    payload_path = work_root / "llm_review_payload.txt"
-    budget = 180_000
-    used = 0
-    chunks: list[str] = []
-    for rel in paths[:max_files]:
-        fp = clean / rel
-        if not fp.is_file():
-            continue
-        try:
-            text = fp.read_text(errors="replace")
-        except OSError:
-            continue
-        chunk = f"\n\n===== {rel} =====\n{text[:8000]}"
-        if used + len(chunk) > budget:
-            break
-        chunks.append(chunk)
-        used += len(chunk)
-    payload_path.write_text("".join(chunks))
-
-    context_path = work_root / "llm_review_context.txt"
-    context_parts: list[str] = []
-    for name in ("sanitized/artifacts/result.json", "sanitized/artifacts/scan_report_post.json"):
-        p = work_root / name
-        if p.is_file():
-            context_parts.append(p.read_text())
-    context_path.write_text("\n".join(context_parts))
-    return payload_path
-
-
-def trim_history(
-    clean: Path,
-    work_root: Path,
-    history_pct: int,
-    *,
-    max_commits: int | None = None,
-) -> dict:
-    subprocess.run(["git", "config", "core.ignorecase", "true"], cwd=clean, check=False)
-    repair_macos_case_collisions(clean)
-    run(["git", "reset", "--hard", "HEAD"], cwd=clean)
-    run(["git", "clean", "-fdx"], cwd=clean)
-    total_s = run(["git", "rev-list", "--count", "HEAD"], cwd=clean).stdout.strip()
-    total = int(total_s)
-    keep = max(1, total * history_pct // 100)
-    if max_commits is not None:
-        keep = min(keep, max_commits)
-    rev_list = run(["git", "rev-list", "--reverse", "HEAD"], cwd=clean).stdout.splitlines()
-    new_head = rev_list[keep - 1]
-
-    branch_proc = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=clean,
+    raw = work_root / "gitleaks.raw.json"
+    proc = subprocess.run(
+        [
+            "gitleaks",
+            "detect",
+            "--source",
+            str(clean),
+            "--report-path",
+            str(raw),
+            "--exit-code",
+            "0",
+        ],
         capture_output=True,
         text=True,
     )
-    branch = branch_proc.stdout.strip() or "main"
-    if branch == "HEAD":
-        branch = "main"
+    log = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        raw.unlink(missing_ok=True)
+        raise RuntimeError(f"gitleaks could not scan {clean} ({proc.returncode}): {log}")
 
-    run(["git", "checkout", "-B", branch, new_head], cwd=clean)
-    run(["git", "filter-repo", "--force", f"--refs=refs/heads/{branch}"], cwd=clean)
-
-    after = run(["git", "rev-list", "--count", "HEAD"], cwd=clean).stdout.strip()
-    work_root.mkdir(parents=True, exist_ok=True)
-    (work_root / "commit_count_after_trim.txt").write_text(after + "\n")
-    return {
-        "commits_before_trim": total,
-        "commits_kept": int(after),
-        "history_pct": history_pct,
-        "new_head": new_head,
-    }
-
-
-def verify_post_trim(
-    clean: Path, rulepack: Path, work_root: Path, *, fast: bool = False
-) -> list[str]:
-    """Post-trim gates. Returns residual brand-gate names (empty = fully clean)."""
-    if fast:
-        report = work_root / "gitleaks-post-trim.json"
-        proc = subprocess.run(
-            [
-                "gitleaks",
-                "detect",
-                "--source",
-                str(clean),
-                "--redact",
-                "--report-path",
-                str(report),
-                "--exit-code",
-                "0",
-            ],
-            cwd=clean,
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"gitleaks failed ({proc.returncode}): {proc.stdout}\n{proc.stderr}"
-            )
-        (work_root / "gitleaks-post-trim.log").write_text(
-            (proc.stdout or "") + (proc.stderr or ""), encoding="utf-8"
-        )
-        return []
-    scan_out = work_root / "scan-post-trim"
-    gate_out = work_root / "gate-post-trim"
-    scan_out.mkdir(parents=True, exist_ok=True)
-    gate_out.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "repo-sanitizer",
-            "scan",
-            str(clean),
-            "--rulepack",
-            str(rulepack),
-            "--out",
-            str(scan_out),
-            *_sanitizer_fast_args(fast),
-        ]
-    )
     try:
-        run(
-            [
-                "repo-sanitizer",
-                "gate",
-                str(clean),
-                "--rulepack",
-                str(rulepack),
-                "--out",
-                str(gate_out),
-                *_sanitizer_fast_args(fast),
-            ]
+        findings = json.loads(raw.read_text()) if raw.is_file() else []
+    except json.JSONDecodeError as exc:
+        raw.unlink(missing_ok=True)
+        raise RuntimeError(f"gitleaks wrote an unreadable report: {exc}") from exc
+    finally:
+        raw.unlink(missing_ok=True)
+
+    real = [f for f in findings if not PLACEHOLDER_SECRET.fullmatch(f.get("Secret", "").strip())]
+    # Location only — never persist or surface the matched secret itself.
+    summary = [
+        {"rule": f.get("RuleID"), "file": f.get("File"), "line": f.get("StartLine")} for f in real
+    ]
+    (work_root / "gitleaks.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (work_root / "gitleaks.log").write_text(log, encoding="utf-8")
+
+    ignored = len(findings) - len(real)
+    if real:
+        where = ", ".join(f"{s['rule']} @ {s['file']}:{s['line']}" for s in summary[:5])
+        raise RuntimeError(
+            f"gitleaks found {len(real)} real secret(s) in the deliverable: {where}"
+            f"{' ...' if len(real) > 5 else ''}"
         )
-        residual_brands: list[str] = []
-    except RuntimeError:
-        # Brand findings survive Pass-3 only when NER names a new org; that is
-        # auditable, not a leak of PII/secrets, so it is recorded rather than fatal.
-        failing = failing_gates(load_result_json(gate_out))
-        if not failing or (failing - BRAND_WORKLIST_GATES):
-            raise
-        residual_brands = sorted(failing)
-    run(["gitleaks", "detect", "--source", str(clean), "--redact"], cwd=clean)
-    return residual_brands
-
-
-def stub_llm_pass_fast(work_root: Path) -> dict:
-    result = {
-        "verdict": "PASS",
-        "summary": "Fast mode: LLM privacy review skipped (regex/gitleaks/deny-globs only).",
-        "findings": [],
-        "source": "fast_mode_stub",
-    }
-    work_root.mkdir(parents=True, exist_ok=True)
-    (work_root / "llm_review.json").write_text(json.dumps(result, indent=2) + "\n")
-    (work_root / "llm_review_notes.md").write_text(
-        "# LLM Privacy Review — PASS (fast mode)\n\nLLM review skipped; deliverable used sanitizer gates only.\n"
-    )
-    return result
+    return ignored
 
 
 def package_deliverable(work_root: Path, repo_slug: str) -> Path:
     clean = work_root / "clean"
-    zip_name = f"{repo_slug}_sanitized_first5pct.zip"
+    zip_name = f"{repo_slug}_sanitized.zip"
     zip_path = work_root / zip_name
     if zip_path.exists():
         zip_path.unlink()
@@ -546,7 +433,6 @@ def package_deliverable(work_root: Path, repo_slug: str) -> Path:
     run(cmd, cwd=work_root)
 
     commits_before = (work_root / "commit_count_before.txt").read_text().strip()
-    commits_after = (work_root / "commit_count_after_trim.txt").read_text().strip()
     bundle_sha = load_result_json(work_root / "sanitized").get("bundle_sha256", "unknown")
     source = ""
     state_path = work_root / "run_state.json"
@@ -557,12 +443,13 @@ def package_deliverable(work_root: Path, repo_slug: str) -> Path:
         "repo_slug": repo_slug,
         "source": source,
         "commits_before": int(commits_before) if commits_before.isdigit() else commits_before,
-        "commits_after_trim": int(commits_after) if commits_after.isdigit() else commits_after,
-        "history_pct_kept": json.loads(state_path.read_text()).get("history_pct", 5)
-        if state_path.is_file()
-        else 5,
+        # History is delivered whole; the count is read back rather than assumed
+        # because the sanitizer drops commits that become empty after redaction.
+        "commits_delivered": int(
+            run(["git", "rev-list", "--count", "HEAD"], cwd=clean).stdout.strip()
+        ),
         "sanitizer_bundle_sha256": bundle_sha,
-        "llm_review": "llm_review.json",
+        "secret_scan": "gitleaks.json",
         "zip": zip_name,
     }
     (work_root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")

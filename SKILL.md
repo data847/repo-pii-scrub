@@ -1,76 +1,48 @@
 ---
 name: repo-pii-scrub
 description: >-
-  Human-in-the-loop pipeline to scrub PII from codebases using repo-sanitizer,
-  LLM privacy review, git history trim (first 5%), post-trim verification, and
-  zip packaging for dataset delivery. Use when anonymizing repos, scrubbing PII,
-  preparing sanitized repo deliverables, or running the repo-sanitizer workflow.
+  Pipeline to scrub PII and secrets from codebases using repo-sanitizer, with a
+  brand pseudonymization pass, an independent gitleaks assertion, and zip
+  packaging for dataset delivery. Full git history is delivered. Use when
+  anonymizing repos, scrubbing PII, preparing sanitized repo deliverables, or
+  running the repo-sanitizer workflow.
 disable-model-invocation: true
 ---
 
 # Repo PII Scrub Pipeline
 
-Seven gates. **Never skip a gate or proceed without explicit human approval where required.**
+Four gates. The sanitizer's own gates decide whether a repo is clean; `package`
+adds an independent gitleaks check before zipping.
 
-| Gate | Command | Human decides |
-|------|---------|---------------|
-| 0 init | `orchestrator.py init` | Source repo, slug, rulepack |
-| 1 clone | `orchestrator.py clone` | Accept baseline commit count |
-| 2 sanitize | `orchestrator.py sanitize` | Accept sanitizer gate results |
-| 2b brand | `orchestrator.py brand-map` | Approve brand → pseudonym map |
-| 3 llm | `orchestrator.py llm-review` | Approve PASS/WARN before trim |
-| 4 trim | `orchestrator.py trim --human-approved` | Approve history reduction |
-| 5 verify | `orchestrator.py verify` | Accept post-trim scan |
-| 6 package | `orchestrator.py package` | Accept final zip |
+| Gate | Command | Purpose |
+|------|---------|---------|
+| 0 init | `orchestrator.py init` | Register source repo, slug, rulepack |
+| 1 clone | `orchestrator.py clone` | Clone or copy source; record baseline commit count |
+| 2 sanitize | `orchestrator.py sanitize` | Pass-1 scrub (regex, secrets, endpoints, NER) |
+| 2b brand-map | `orchestrator.py brand-map` | Pass-2/Pass-3 brand pseudonyms; materialize `clean/` |
+| 3 package | `orchestrator.py package` | gitleaks assertion + zip + `MANIFEST.json` |
 
-## Why Gate 2b exists
-
-Pass-1 (`sanitize`) redacts PII, secrets and endpoints but **never rewrites a brand
-or organization name** — those are reported as a *Pass-2 worklist*, so the
-`ORG_NAME` / `BRAND_*` gates fail by design on any repo that names its own company.
-Gate 2b builds a deterministic brand map (`term → ANON_ORG_<hash>`) from that
-worklist plus any `--term` you supply, then runs Pass-3 `apply-map` to substitute
-those brands across every blob, commit message, and path.
-
-Without this gate the pipeline can never deliver such a repo: Pass-1 keeps failing
-its brand gates forever.
+In fast mode (`--fast`) NER is off and there is no brand pass, so `sanitize` goes
+straight to `package`.
 
 ## Prerequisites
 
 ```bash
-cd skills/repo-pii-scrub
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 brew install gitleaks          # macOS
-pip install git-filter-repo
 
 # Copy rulepack — see rules/README.md
 export REPO_SANITIZER_SALT="$(openssl rand -hex 32)"   # never commit
-export ANTHROPIC_API_KEY=...                           # Gate 3
 ```
 
 | Requirement | Notes |
 |-------------|-------|
 | `repo-sanitizer` | PII + secrets scrub; requires gitleaks |
-| `REPO_SANITIZER_SALT` | Deterministic redaction salt — never commit it |
+| `REPO_SANITIZER_SALT` | Deterministic redaction salt — the only required secret |
 | `rules/` | Rulepack directory |
-| `ANTHROPIC_API_KEY` | LLM privacy review (Gate 3) |
 | Batch runs | `scripts/run_batch.py --repos-file <list>` |
 
-Values are read from `.env` in this directory if present.
-
-### NER device and the shared service
-
-`rules/policies.yaml` sets `ner.device`. **On a machine without CUDA (e.g. Apple
-Silicon) this must be `cpu`** — a `cuda:0` value makes the model load hang.
-
-Each sanitize worker otherwise loads its own ~700 MB transformer model, which
-exhausts memory and deadlocks under parallelism. Start one shared service and
-point the workers at it:
-
-```bash
-python scripts/ner_service_manager.py --device cpu --idle-timeout 0   # once
-export PII_SCRUB_NER_SERVICE_URL=http://127.0.0.1:8765
-```
+## Configuration
 
 | Variable | Purpose |
 |----------|---------|
@@ -80,40 +52,39 @@ export PII_SCRUB_NER_SERVICE_URL=http://127.0.0.1:8765
 | `PII_SCRUB_STEP_TIMEOUT` | Per-command cap, seconds (`0` = unlimited) |
 | `PII_SCRUB_GATE_TIMEOUT` | Per-gate cap, seconds (`0` = unlimited) |
 
-## Verifying the pipeline
+## Normal vs fast mode
 
-`make_pii_fixture.py` generates a medium-sized repo seeded with every PII and
-secret class the rulepack detects — in the working tree, in blobs that exist only
-in deleted history, in commit messages, and in author identities. `verify_pii_fixture.py`
-then proves none of those literals survive.
+| | Normal | Fast |
+|---|---|---|
+| NER (person/org names in free text) | on | off |
+| Brand pseudonym pass | yes | no |
+| Runtime, 1 MB / 473 files / 42 commits | ~25 min | ~22 s |
+| Planted fixture PII redacted | 59/59 | 57/59 |
+
+NER is ~98% of normal-mode runtime. Fast mode catches everything with a regex or
+entropy signature (keys, tokens, emails, phones, endpoints, IDs) but leaves
+free-text person names, so it is not suitable for external delivery.
+
+Use a shared NER service for parallel batches — otherwise each worker loads its
+own ~700 MB model and the pool deadlocks:
 
 ```bash
-python scripts/run_pipeline_verification.py --history-pct 100
+python scripts/ner_service_manager.py --port 8765 --device cpu
+export PII_SCRUB_NER_SERVICE_URL=http://127.0.0.1:8765
 ```
 
-`--history-pct 100` keeps every commit so the leak scan covers the whole history
-rather than only the delivered slice. Run `verify_pii_fixture.py --check-patterns`
-alone to confirm each planted value still matches its detector — otherwise a
-"clean" result could just mean the value never matched anything.
-
-## Agent workflow (mandatory)
-
-When the user invokes this skill:
+## Agent workflow
 
 1. **Read** [reference.md](reference.md) for step details and troubleshooting.
 2. **Gate 0** — `init` with `--repo-slug`, `--source`, `--run-id`.
 3. **Gate 1** — `clone`. Report commits before scrub.
 4. **Gate 2** — `sanitize --pre-scan`. Report sanitizer `result.json` gate status.
-5. **Gate 2b** — `brand-map`. Present the proposed brand → pseudonym map and the
-   terms it will rewrite across all history before accepting it.
-6. **STOP.** Present LLM sample path. Ask: *"Run LLM privacy review?"*
-6. **Gate 3** — `llm-review --auto` then `--human-approved` if WARN. **STOP on FAIL** — update rulepack, re-run Gate 2.
-7. **STOP.** Ask: *"Approve trimming history to first 5%?"*
-8. **Gate 4** — `trim --human-approved`.
-9. **Gate 5** — `verify`. Report gate + gitleaks exit code.
-10. **Gate 6** — `package`. Deliver zip path + `MANIFEST.json`.
+5. **Gate 2b** — `brand-map`, passing `--term` for each known brand/org name.
+6. **Gate 3** — `package`. Deliver zip path + `MANIFEST.json`.
 
-**Never** run Gates 3–6 in one shot without human checkpoints.
+Stop and report if any gate fails; do not hand over a deliverable from a failed
+run. A `sanitize` gate failure means the rulepack needs work — fix it and re-run
+Gate 2 rather than forcing past it.
 
 ## Quick commands
 
@@ -127,10 +98,6 @@ python scripts/orchestrator.py init \
 python scripts/orchestrator.py clone --run-dir $RUN
 python scripts/orchestrator.py sanitize --run-dir $RUN --pre-scan
 python scripts/orchestrator.py brand-map --run-dir $RUN --term AcmeCorp
-python scripts/orchestrator.py llm-review --run-dir $RUN --auto
-python scripts/orchestrator.py llm-review --run-dir $RUN --human-approved
-python scripts/orchestrator.py trim --run-dir $RUN --human-approved
-python scripts/orchestrator.py verify --run-dir $RUN
 python scripts/orchestrator.py package --run-dir $RUN
 python scripts/orchestrator.py status --run-dir $RUN
 ```
@@ -142,13 +109,24 @@ Full walkthrough: [examples.md](examples.md)
 | Path | Gate |
 |------|------|
 | `source/` | 1 — original clone |
+| `commit_count_before.txt`, `head_before.txt` | 1 |
+| `scan-pre/` | 2 — read-only pre-scan report |
 | `sanitized/output/sanitized.bundle` | 2 |
 | `brand_map.json`, `sanitized-brands/` | 2b |
-| `clean/` | 2b — materialized sanitized repo |
-| `llm_review.json`, `llm_review_notes.md` | 3 |
-| `commit_count_after_trim.txt` | 4 |
-| `gate-post-trim/` | 5 |
-| **`{slug}_sanitized_first5pct.zip`**, `MANIFEST.json` | 6 |
+| `clean/` | 2b — materialized sanitized repo, full history |
+| `gitleaks.json`, `gitleaks.log` | 3 — independent secret scan (locations only) |
+| **`{slug}_sanitized.zip`**, `MANIFEST.json` | 3 |
+
+## Verifying the pipeline
+
+`scripts/make_pii_fixture.py` builds a synthetic repo with 59 planted PII values
+across the working tree, history-only blobs, commit messages, and author
+identities. `scripts/run_pipeline_verification.py` runs the whole pipeline
+against it and asserts that none of them survive:
+
+```bash
+python scripts/run_pipeline_verification.py --reuse-fixture
+```
 
 ## Using a local repo (skip remote clone)
 
@@ -159,40 +137,26 @@ python scripts/orchestrator.py init \
   --source /abs/path/to/existing/repo
 ```
 
-## After packaging
-
-Run **`dataset-repo-metrics`** on `clean/` or the extracted zip for compiled-sheet metrics.
-
 ## Agent checklist
 
 ```
 - [ ] Confirm source (URL or local path) and repo slug with user
 - [ ] Verify REPO_SANITIZER_SALT is set
 - [ ] Verify rules/ rulepack exists (see rules/README.md)
-- [ ] Confirm ner.device matches the host (cpu when there is no CUDA)
-- [ ] Run gates 1–2; report sanitizer gate pass/fail
-- [ ] Gate 2b — present brand map for approval
-- [ ] STOP — LLM review; block on FAIL
-- [ ] STOP — human approval before trim
-- [ ] Run gates 4–6
-- [ ] Report: zip path, commits before/after, LLM verdict, bundle SHA
+- [ ] Collect brand/org terms to pass to brand-map
+- [ ] Run gates 1–3; report sanitizer gate pass/fail
+- [ ] Report: zip path, commits delivered, gitleaks result, bundle SHA
 ```
 
 ## Key paths
 
 ```
-repo-pii-scrub/
 ├── SKILL.md
-├── reference.md                        # full step-by-step workflow
+├── reference.md              # full step-by-step workflow
 ├── examples.md
-├── rules/                              # repo-sanitizer rulepack (customize per org)
-├── scripts/orchestrator.py             # pipeline entry point (gates 0–6)
-├── scripts/run_batch.py                # batch driver (--repos-file)
-├── scripts/ner_service_manager.py      # shared NER service
-├── scripts/make_pii_fixture.py         # PII fixture generator
-├── scripts/verify_pii_fixture.py       # leak scanner / detector self-check
-├── scripts/run_pipeline_verification.py
-└── outputs/{run-id}/                   # per-run artifacts
+├── rules/                    # repo-sanitizer rulepack (customize per org)
+├── scripts/orchestrator.py   # pipeline entry point
+└── outputs/{run-id}/         # per-run artifacts
 ```
 
 ## Related

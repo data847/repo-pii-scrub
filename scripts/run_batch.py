@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ORCH = ROOT / "scripts" / "orchestrator.py"
 sys.path.insert(0, str(ROOT / "scripts"))
+from batch_env import load_env_file, worker_env_from  # noqa: E402
 
 DEFAULT_BATCH_ID = "batch"
 BATCH_ROOT = ROOT / "outputs" / DEFAULT_BATCH_ID
@@ -101,9 +102,7 @@ def pipeline_repo(
     batch_id: str,
     batch_root: Path | None = None,
     env: dict,
-    skip_llm: bool,
     fast: bool,
-    env_file: Path | None,
     brand_terms: list[str] | None = None,
 ) -> dict:
     log: list[str] = []
@@ -115,7 +114,6 @@ def pipeline_repo(
 
     run_dir = root / slug
     run_id = f"{batch_id}/{slug}"
-    deliver = fast or not skip_llm
 
     def step(name: str, cmd: list[str]) -> int:
         code, out = run_step(cmd, env)
@@ -177,54 +175,6 @@ def pipeline_repo(
             return result
 
     state = json.loads(state_path.read_text())
-    gate = state.get("current_gate", "llm")
-
-    if gate == "llm" and deliver:
-        llm_cmd = [
-            sys.executable,
-            str(ORCH),
-            "llm-review",
-            "--run-dir",
-            str(run_dir),
-            "--auto",
-            "--human-approved",
-        ]
-        if env_file:
-            llm_cmd.extend(["--env-file", str(env_file)])
-        if step("llm", llm_cmd):
-            result = {"slug": slug, "status": "fail", "gate": "llm", "log": log}
-            _write_repo_log(slug, log, root)
-            return result
-    elif gate == "llm" and skip_llm and not fast:
-        log.append("=== llm SKIPPED (--skip-llm) ===")
-
-    state = json.loads(state_path.read_text())
-    gate = state.get("current_gate", "trim")
-
-    if gate == "llm" and not deliver:
-        result = {"slug": slug, "status": "partial", "gate": "llm", "log": log}
-        _write_repo_log(slug, log, root)
-        return result
-
-    if gate == "trim":
-        if step(
-            "trim",
-            [sys.executable, str(ORCH), "trim", "--run-dir", str(run_dir), "--human-approved"],
-        ):
-            result = {"slug": slug, "status": "fail", "gate": "trim", "log": log}
-            _write_repo_log(slug, log, root)
-            return result
-
-    state = json.loads(state_path.read_text())
-    gate = state.get("current_gate", "verify")
-
-    if gate == "verify":
-        if step("verify", [sys.executable, str(ORCH), "verify", "--run-dir", str(run_dir)]):
-            result = {"slug": slug, "status": "fail", "gate": "verify", "log": log}
-            _write_repo_log(slug, log, root)
-            return result
-
-    state = json.loads(state_path.read_text())
     gate = state.get("current_gate", "package")
 
     if gate == "package":
@@ -233,7 +183,7 @@ def pipeline_repo(
             _write_repo_log(slug, log, root)
             return result
 
-    zip_path = run_dir / f"{slug}_sanitized_first5pct.zip"
+    zip_path = run_dir / f"{slug}_sanitized.zip"
     result = {
         "slug": slug,
         "status": "done",
@@ -258,9 +208,7 @@ def _pipeline_repo_worker(payload: dict) -> dict:
             batch_id=payload["batch_id"],
             batch_root=BATCH_ROOT,
             env=env,
-            skip_llm=payload["skip_llm"],
             fast=payload["fast"],
-            env_file=Path(payload["env_file"]) if payload.get("env_file") else None,
             brand_terms=payload.get("brand_terms"),
         )
     except Exception as exc:  # noqa: BLE001
@@ -269,23 +217,14 @@ def _pipeline_repo_worker(payload: dict) -> dict:
     return result
 
 
-def _should_skip_resume(slug: str, *, skip_llm: bool, fast: bool, batch_root: Path | None = None) -> bool:
+def _should_skip_resume(slug: str, *, batch_root: Path | None = None) -> bool:
     root = batch_root or BATCH_ROOT
-    state_path = root / slug / "run_state.json"
-    zip_path = root / slug / f"{slug}_sanitized_first5pct.zip"
-    if zip_path.is_file():
+    if (root / slug / f"{slug}_sanitized.zip").is_file():
         return True
+    state_path = root / slug / "run_state.json"
     if not state_path.is_file():
         return False
-    state = json.loads(state_path.read_text())
-    gate = state.get("current_gate", "")
-    if gate == "done":
-        return True
-    if fast:
-        return False
-    if skip_llm and gate in {"llm", "trim", "verify", "package", "done"}:
-        return True
-    return False
+    return json.loads(state_path.read_text()).get("current_gate") == "done"
 
 
 def discover_repos(repos_file: Path) -> list[tuple[str, Path]]:
@@ -341,11 +280,10 @@ def main() -> int:
         required=True,
         help="Repo list: 'slug <path>' lines (or JSON). See README.",
     )
-    p.add_argument("--skip-llm", action="store_true", help="Stop after sanitize (Gate 2); ignored with --fast")
     p.add_argument(
         "--fast",
         action="store_true",
-        help="Fast mode: NER off, symlink source, stub LLM, gitleaks-only verify, full zip deliverable",
+        help="Fast mode: NER off, symlink source, no brand pass (regex/secrets only)",
     )
     p.add_argument("--env-file", default=str(ROOT / ".env"))
     p.add_argument("--limit", type=int, default=0, help="Max repos (0 = all)")
@@ -382,35 +320,18 @@ def main() -> int:
     if args.limit:
         repos = repos[: args.limit]
 
-    env_file = Path(args.env_file) if args.env_file else None
-    if env_file and env_file.is_file():
-        for raw in env_file.read_text().splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key, val = key.strip(), val.strip().strip("'\"")
-            if key and key not in env:
-                env[key] = val
-
-    if args.fast:
-        args.skip_llm = False
+    load_env_file(env, Path(args.env_file) if args.env_file else None)
 
     if args.resume:
         pending: list[tuple[str, Path]] = []
         for slug, path in repos:
-            if _should_skip_resume(slug, skip_llm=args.skip_llm, fast=args.fast, batch_root=batch_root):
+            if _should_skip_resume(slug, batch_root=batch_root):
                 print(f"SKIP (resume) {slug}", flush=True)
             else:
                 pending.append((slug, path))
         repos = pending
 
-    worker_env = {
-        k: env[k]
-        for k in ("PATH", "REPO_SANITIZER_SALT", "ANTHROPIC_API_KEY", "PII_SCRUB_MODEL")
-        if k in env
-    }
-    worker_env["PATH"] = env["PATH"]
+    worker_env = worker_env_from(env)
 
     payloads = [
         {
@@ -419,9 +340,7 @@ def main() -> int:
             "batch_id": args.batch_id,
             "batch_root": str(batch_root),
             "env": worker_env,
-            "skip_llm": args.skip_llm,
             "fast": args.fast,
-            "env_file": str(env_file) if env_file else "",
         }
         for slug, path in repos
     ]
@@ -438,9 +357,7 @@ def main() -> int:
                     batch_id=args.batch_id,
                     batch_root=batch_root,
                     env=env,
-                    skip_llm=args.skip_llm,
                     fast=args.fast,
-                    env_file=env_file,
                 )
             )
     else:
@@ -467,7 +384,6 @@ def main() -> int:
         "partial": sum(1 for r in results if r["status"] == "partial"),
         "fail": sum(1 for r in results if r["status"] == "fail"),
         "skip": sum(1 for r in results if r["status"] == "skip"),
-        "skip_llm": args.skip_llm,
         "fast": args.fast,
         "results": results,
     }

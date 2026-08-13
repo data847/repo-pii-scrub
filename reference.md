@@ -16,72 +16,99 @@ This document is the detailed manual for each step.
 
 ---
 
-## Step 2 — Scrub PII with repo-sanitizer
+## Step 2 — Scrub PII with repo-sanitizer (Pass-1)
 
 **Orchestrator:** `orchestrator.py sanitize --run-dir $RUN [--pre-scan]`
 
-1. Optional pre-scan → `{run-dir}/scan-pre/`
+1. Optional pre-scan → `{run-dir}/scan-pre/`. This is read-only and reports a
+   finding count; findings are expected and are not a failure.
 2. `repo-sanitizer sanitize --gate` → `{run-dir}/sanitized/`
-3. Clone `sanitized/output/sanitized.bundle` → `{run-dir}/clean/`
-4. Build LLM sample files
 
 Requires `REPO_SANITIZER_SALT` and a valid `rules/` rulepack.
 
----
+The sanitizer's gates are what decide whether a repo is clean. If a gate fails on
+anything other than a brand/org name, extend the rulepack and re-run this step —
+do not proceed.
 
-## Step 3 — Verify using LLM
-
-**Orchestrator:** `orchestrator.py llm-review --run-dir $RUN [--auto] [--human-approved]`
-
-- Reads `{run-dir}/llm_review_payload.txt` (sampled files from `clean/`)
-- Calls Anthropic API with privacy-review prompt
-- Writes `llm_review.json` and `llm_review_notes.md`
-
-| Verdict | Action |
-|---------|--------|
-| **PASS** | Proceed to Step 4 |
-| **FAIL** | Update rulepack → re-run Step 2 |
-| **WARN** | Human sign-off via `--human-approved` |
+Brand and org gates (`ORG_NAME`, `BRAND_IDENTIFIER`, `BRAND_PATH`,
+`PACKAGE_NAMESPACE`) are not failures here. They are carried forward as a
+worklist for Step 2b, which is where they get pseudonymized.
 
 ---
 
-## Step 4 — Reset git history to the first 5% of commits
+## Step 2b — Brand map (Pass-2 and Pass-3)
 
-**Orchestrator:** `orchestrator.py trim --run-dir $RUN --human-approved [--history-pct 5]`
+**Orchestrator:** `orchestrator.py brand-map --run-dir $RUN [--term AcmeCorp ...]`
 
-Keeps earliest N% of commits (default 5%, minimum 1):
+1. Collect brand terms: the Pass-1 worklist plus any explicit `--term` values.
+2. Assign each a deterministic salted pseudonym → `brand_map.json`.
+3. `repo-sanitizer apply-map` rewrites them across all of git history →
+   `{run-dir}/sanitized-brands/`.
+4. Clone the resulting bundle → `{run-dir}/clean/`.
 
-```bash
-TOTAL=$(git rev-list --count HEAD)
-KEEP=$(( TOTAL * 5 / 100 )); [ "$KEEP" -lt 1 ] && KEEP=1
-NEW_HEAD=$(git rev-list --reverse HEAD | sed -n "${KEEP}p")
-git checkout -B main "$NEW_HEAD"
-git filter-repo --force --refs refs/heads/main
-```
+Pass terms you know about explicitly. Terms are never derived from the repo slug,
+because generic words in a slug ("app", "backend") would rewrite unrelated code.
 
----
-
-## Step 5 — Verify for PII (post-trim)
-
-**Orchestrator:** `orchestrator.py verify --run-dir $RUN`
-
-- `repo-sanitizer scan` + `gate` on `{run-dir}/clean/`
-- `gitleaks detect --redact`
-
-Both must exit 0.
+In fast mode there is no brand pass; `sanitize` materializes `clean/` itself.
 
 ---
 
-## Step 6 — Zip the repo
+## Step 3 — Package
 
 **Orchestrator:** `orchestrator.py package --run-dir $RUN`
 
-Produces:
-
-- `{repo_slug}_sanitized_first5pct.zip` — includes `.git` history
-- `MANIFEST.json` — commits before/after, bundle SHA, LLM review path
+1. gitleaks assertion over `clean/`. The sanitizer's `REDACTED_<hash>`
+   placeholders are high-entropy, so gitleaks flags them as generic API keys;
+   those are filtered out by value and only genuine findings fail the gate. The
+   scan runs unredacted to make that distinction, then the raw report is deleted
+   and only locations (rule, file, line) are kept in `gitleaks.json`.
+2. Zip → `{repo_slug}_sanitized.zip`, including full `.git` history.
+3. `MANIFEST.json` — commits before, commits delivered, bundle SHA, secret-scan path.
 
 Excludes: `node_modules`, `.venv`, `vendor`, `dist`, `build`, `.next`, `__pycache__`.
+
+---
+
+## Verifying the pipeline itself
+
+`scripts/make_pii_fixture.py` builds a synthetic repo with 59 planted PII values
+spread across the working tree, history-only blobs, commit messages, and author
+identities, and writes a manifest of them.
+
+`scripts/verify_pii_fixture.py` has two modes:
+
+- `--check-patterns` asserts each planted value actually matches its intended
+  detector, so a passing scrub cannot be an artifact of a broken fixture.
+- default mode scans a deliverable (directory or zip) for every planted literal
+  across the working tree, all history blobs, and commit metadata.
+
+`scripts/run_pipeline_verification.py` chains both around a real pipeline run:
+
+```bash
+python scripts/run_pipeline_verification.py --reuse-fixture
+```
+
+Normal mode redacts 59/59. Fast mode redacts 57/59, leaving free-text person
+names that only NER can find.
+
+---
+
+## Performance
+
+NER dominates normal-mode runtime — roughly 98% of it, across three passes over
+the tree. Everything else is negligible (regex PII ~0.2s, secrets ~0.002s,
+endpoints ~0.06s on a 1 MB repo).
+
+For parallel batches, run one shared NER service instead of letting each worker
+load its own ~700 MB model, which exhausts memory and deadlocks the pool:
+
+```bash
+python scripts/ner_service_manager.py --port 8765 --device cpu
+export PII_SCRUB_NER_SERVICE_URL=http://127.0.0.1:8765
+```
+
+Use `--device cpu` on Apple Silicon. A `cuda:0` default will hang on a machine
+without CUDA rather than failing outright.
 
 ---
 
@@ -92,7 +119,9 @@ Excludes: `node_modules`, `.venv`, `vendor`, `dist`, `build`, `.next`, `__pycach
 | `gitleaks not found` | `brew install gitleaks` |
 | `Rulepack not found` | Copy from repo-sanitizer `examples/rules/` → `rules/` |
 | Sanitize gate fails | Inspect `scan-pre/artifacts/`; extend dictionaries |
-| LLM FAIL | Add client/org terms to `rules/dictionaries/` |
+| Brand gate still failing after Pass-3 | Add the term explicitly via `--term` |
+| Sanitize hangs at 0% CPU | NER model loading on a non-CUDA device, or one model per worker — set `ner.device: cpu` and use the shared NER service |
+| `gitleaks found N real secret(s)` | Genuine leak in the deliverable; extend the rulepack and re-run Step 2 |
 | `git filter-repo` missing | `pip install git-filter-repo` |
 | LFS / binary leaks | Add denied paths in rulepack; repo-sanitizer skips LFS fetch |
 

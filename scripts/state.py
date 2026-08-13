@@ -26,8 +26,6 @@ def init_run(
     repo_slug: str,
     source: str,
     rulepack: str,
-    history_pct: int,
-    model: str,
     fast_mode: bool = False,
 ) -> dict[str, Any]:
     data = {
@@ -35,14 +33,10 @@ def init_run(
         "repo_slug": repo_slug,
         "source": source,
         "rulepack": rulepack,
-        "history_pct": history_pct,
-        "model": model,
         "fast_mode": fast_mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "current_gate": "clone",
         "gates_completed": [],
-        "human_approvals": {},
-        "llm_verdict": None,
     }
     save(path, data)
     return data

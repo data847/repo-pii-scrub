@@ -1,13 +1,12 @@
 # repo-pii-scrub
 
-A gated, human-in-the-loop pipeline for removing PII, secrets and company-identifying
-data from Git repositories — including their entire history — and packaging the result
-for delivery.
+A gated pipeline for removing PII, secrets and company-identifying data from Git
+repositories — including their entire history — and packaging the result for delivery.
 
 It wraps [`repo-sanitizer`](https://github.com/Fermatix/repo-sanitizer) with an
-orchestrator that enforces explicit checkpoints, a brand-anonymization pass, an LLM
-privacy review, history trimming, post-trim verification, and a reproducible
-verification harness that proves the pipeline actually redacts what it claims to.
+orchestrator, a brand-anonymization pass, an independent secret assertion, and a
+reproducible verification harness that proves the pipeline actually redacts what it
+claims to.
 
 ## Why the gates matter
 
@@ -17,14 +16,15 @@ than being one opaque command that either works or silently ships a leak.
 
 | Gate | Command | What it does |
 |------|---------|--------------|
-| 0 | `init` | Register source, slug, rulepack, history percentage |
+| 0 | `init` | Register source, slug, rulepack |
 | 1 | `clone` | Clone/copy the source, record baseline commit count |
 | 2 | `sanitize` | Pass-1: redact PII/secrets/endpoints, rewrite all history, run gates |
 | 2b | `brand-map` | Pass-2 brand map + Pass-3 `apply-map` across all history |
-| 3 | `llm-review` | LLM privacy review of a sampled payload; blocks on FAIL |
-| 4 | `trim` | Keep the first N% of commits |
-| 5 | `verify` | Post-trim scan + gates + gitleaks |
-| 6 | `package` | Zip the deliverable and write `MANIFEST.json` |
+| 3 | `package` | gitleaks assertion, zip the deliverable, write `MANIFEST.json` |
+
+Full git history is delivered. The sanitizer's own gates are what decide whether a repo
+is clean, so a `sanitize` failure means the rulepack needs a term added — not that the
+gate should be bypassed.
 
 ## The brand pass (Gate 2b)
 
@@ -56,7 +56,6 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 brew install gitleaks                                   # or your package manager
 
 export REPO_SANITIZER_SALT="$(openssl rand -hex 32)"     # never commit this
-export ANTHROPIC_API_KEY=...                             # Gate 3
 
 RUN=outputs/my-scrub
 python scripts/orchestrator.py init --run-id my-scrub \
@@ -64,11 +63,18 @@ python scripts/orchestrator.py init --run-id my-scrub \
 python scripts/orchestrator.py clone     --run-dir $RUN
 python scripts/orchestrator.py sanitize  --run-dir $RUN --pre-scan
 python scripts/orchestrator.py brand-map --run-dir $RUN --term MyCompany
-python scripts/orchestrator.py llm-review --run-dir $RUN --auto
-python scripts/orchestrator.py trim      --run-dir $RUN --human-approved
-python scripts/orchestrator.py verify    --run-dir $RUN
 python scripts/orchestrator.py package   --run-dir $RUN
 ```
+
+## Normal vs fast mode
+
+`--fast` at `init` turns NER off and skips the brand pass. On a 1 MB / 473-file /
+42-commit fixture that is ~22 s against ~25 min, and it redacts 57 of 59 planted
+values instead of all 59. The two survivors are free-text person names, which only NER
+finds — so fast mode is for internal triage, not delivery.
+
+NER accounts for roughly 98% of normal-mode runtime. Every other detector is
+negligible: regex PII ~0.2 s, secrets ~0.002 s, endpoints ~0.06 s.
 
 ## NER: device and the shared service
 
@@ -105,7 +111,7 @@ A privacy pipeline you have not tested is a privacy pipeline you do not have. Th
 repo ships a fixture generator and a leak scanner.
 
 ```bash
-python scripts/run_pipeline_verification.py --history-pct 100
+python scripts/run_pipeline_verification.py --reuse-fixture
 ```
 
 `make_pii_fixture.py` builds a medium-sized repo (hundreds of files, tens of commits)
@@ -131,9 +137,6 @@ detector worked, or that the test value never matched anything in the first plac
 python scripts/verify_pii_fixture.py --check-patterns
 python scripts/verify_pii_fixture.py --repo path/to/clean --zip path/to/deliverable.zip
 ```
-
-Use `--history-pct 100` when verifying so the scan covers all history instead of only
-the delivered slice.
 
 ### A note on test IP addresses
 
@@ -165,10 +168,9 @@ org__service-b   /abs/path/to/service-b
 ├── examples.md
 ├── rules/                              # rulepack: regex patterns, policies, dictionaries
 └── scripts/
-    ├── orchestrator.py                 # gates 0–6
+    ├── orchestrator.py                 # gates 0–3
     ├── steps.py                        # step implementations
     ├── state.py                        # run-state persistence
-    ├── llm_review.py                   # Gate 3
     ├── batch_env.py                    # shared environment assembly
     ├── run_batch.py                    # batch driver
     ├── ner_service_manager.py          # shared NER service lifecycle
@@ -184,10 +186,12 @@ org__service-b   /abs/path/to/service-b
 - `.env`, `.salt`, `outputs/` and `fixtures/` are gitignored. Never commit them.
 - The fixture's planted credentials are synthetic, non-functional vendor
   documentation values. Do not replace them with real ones.
-- Gate 5 hard-fails on residual secrets, PII and endpoints. Residual *brand* findings
-  after Pass-3 are recorded in `run_state.json` as `residual_brand_gates` rather than
-  failing the run, since they are company-identifying rather than personal data —
-  review them before shipping.
+- `package` hard-fails if gitleaks finds a real secret in the deliverable. The
+  sanitizer's own `REDACTED_<hash>` placeholders are high-entropy and would otherwise
+  be reported as generic API keys, so they are filtered out by value. That filtering
+  requires an unredacted scan, so the raw report is deleted immediately and only
+  locations (rule, file, line) are kept in `gitleaks.json` — a matched secret is never
+  written to disk or into an error message.
 
 ## Credits
 
