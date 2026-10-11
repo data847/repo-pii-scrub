@@ -71,7 +71,10 @@ python scripts/orchestrator.py package   --run-dir $RUN
 `--fast` at `init` turns NER off and skips the brand pass. On a 1 MB / 473-file /
 42-commit fixture that is ~22 s against ~25 min, and it redacts 57 of 59 planted
 values instead of all 59. The two survivors are free-text person names, which only NER
-finds — so fast mode is for internal triage, not delivery.
+finds — so fast mode is for internal triage, not delivery. A fast run's `MANIFEST.json`
+says `"mode": "fast"` and `"not_for_external_delivery": true`.
+
+`run_batch.py` accepts `--term` (repeatable) and `--terms-file` to seed the brand pass.
 
 NER accounts for roughly 98% of normal-mode runtime. Every other detector is
 negligible: regex PII ~0.2 s, secrets ~0.002 s, endpoints ~0.06 s.

@@ -30,6 +30,26 @@ def step_timeout() -> int | None:
     return value if value > 0 else None
 
 
+# Client repos are untrusted: their .git/config can point core.fsmonitor or
+# core.hooksPath at executables. Env-level config (git >= 2.31) outranks repo
+# config and also reaches git processes spawned by repo-sanitizer.
+GIT_HARDENING_ENV = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "/dev/null",
+    "GIT_CONFIG_KEY_1": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_1": "",
+}
+GIT_HARDENING_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor="]
+
+
+def hardened(cmd: list[str]) -> list[str]:
+    if cmd and cmd[0] == "git":
+        return [cmd[0], *GIT_HARDENING_ARGS, *cmd[1:]]
+    return cmd
+
+
 def run(
     cmd: list[str],
     *,
@@ -40,6 +60,8 @@ def run(
     merged = os.environ.copy()
     if env:
         merged.update(env)
+    merged.update(GIT_HARDENING_ENV)
+    cmd = hardened(cmd)
     limit = step_timeout() if timeout == -1 else timeout
     try:
         proc = subprocess.run(
@@ -60,9 +82,25 @@ def run(
     return proc
 
 
+REQUIRED_TOOLS = ("git", "gitleaks", "repo-sanitizer", "zip")
+
+TOOL_FIX_HINT = (
+    "Install them (gitleaks: https://github.com/gitleaks/gitleaks/releases, "
+    "repo-sanitizer: pip install into .venv, zip: your OS package manager) "
+    "or put them in .tools/bin or .venv/bin."
+)
+
+
+def missing_tools(path: str | None = None) -> list[str]:
+    return [t for t in REQUIRED_TOOLS if shutil.which(t, path=path) is None]
+
+
+def preflight_message(missing: list[str]) -> str:
+    return f"Missing required tool(s) on PATH: {', '.join(missing)}. {TOOL_FIX_HINT}"
+
+
 def require_tool(name: str) -> None:
-    proc = subprocess.run(["which", name], capture_output=True, text=True)
-    if proc.returncode != 0:
+    if shutil.which(name) is None:
         raise RuntimeError(f"Required tool not found on PATH: {name}")
 
 
@@ -70,8 +108,8 @@ def repair_macos_case_collisions(repo: Path) -> bool:
     """Remove duplicate git paths that collide on case-insensitive macOS (e.g. README.md vs readme.md)."""
     if not (repo / ".git").exists():
         return False
-    subprocess.run(["git", "config", "core.ignorecase", "true"], cwd=repo, check=False)
-    proc = subprocess.run(["git", "ls-files"], cwd=repo, capture_output=True, text=True)
+    subprocess.run(hardened(["git", "config", "core.ignorecase", "true"]), cwd=repo, check=False)
+    proc = subprocess.run(hardened(["git", "ls-files"]), cwd=repo, capture_output=True, text=True)
     if proc.returncode != 0:
         return False
     by_lower: dict[str, list[str]] = {}
@@ -93,8 +131,9 @@ def repair_macos_case_collisions(repo: Path) -> bool:
 
 
 def check_prerequisites() -> None:
-    for tool in ("git", "gitleaks", "repo-sanitizer", "git-filter-repo"):
-        require_tool(tool)
+    missing = missing_tools()
+    if missing:
+        raise RuntimeError(preflight_message(missing))
     if not os.environ.get("REPO_SANITIZER_SALT", "").strip():
         raise RuntimeError("REPO_SANITIZER_SALT must be set (never commit this value)")
 
@@ -141,7 +180,7 @@ def clone_or_copy_source(source: str, dest: Path, *, fast: bool = False) -> None
 
 
 def record_baseline(repo: Path, work_root: Path) -> dict:
-    total = run(["git", "rev-list", "--count", "HEAD"], cwd=repo).stdout.strip()
+    total = run(["git", "rev-list", "--count", "--all"], cwd=repo).stdout.strip()
     head = run(["git", "log", "-1", "--format=%H %ci %s"], cwd=repo).stdout.strip()
     work_root.mkdir(parents=True, exist_ok=True)
     (work_root / "commit_count_before.txt").write_text(total + "\n")
@@ -345,6 +384,69 @@ def materialize_clean(bundle: Path, clean: Path) -> None:
         ["git", "clone", str(bundle), str(clean)],
         env={"GIT_LFS_SKIP_SMUDGE": "1"},
     )
+    detach_origin(clean)
+
+
+def detach_origin(clean: Path) -> None:
+    """Make the clone self-contained.
+
+    The clone's config otherwise ships `remote.origin.url` (an absolute host path
+    to the bundle) and every branch only as refs/remotes/origin/*. Promote those to
+    local branches, then drop the remote. Annotated tags become lightweight ones so
+    tagger identities and tag messages, which the sanitizer never rewrites, do not
+    ship.
+    """
+    refs = run(
+        ["git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"],
+        cwd=clean,
+    ).stdout.splitlines()
+    for line in refs:
+        name, sha = line.split(" ", 1)
+        branch = name[len("refs/remotes/origin/"):]
+        if branch == "HEAD":
+            continue
+        have = subprocess.run(
+            hardened(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]),
+            cwd=clean,
+            env={**os.environ, **GIT_HARDENING_ENV},
+        )
+        if have.returncode != 0:
+            run(["git", "update-ref", f"refs/heads/{branch}", sha], cwd=clean)
+    run(["git", "remote", "remove", "origin"], cwd=clean)
+
+    tags = run(
+        ["git", "for-each-ref", "--format=%(refname:strip=2) %(objecttype) %(*objectname)", "refs/tags/"],
+        cwd=clean,
+    ).stdout.splitlines()
+    for line in tags:
+        name, kind, target = (line.split(" ") + ["", ""])[:3]
+        if kind == "tag" and target:
+            run(["git", "tag", "-f", name, target], cwd=clean)
+
+
+EMAIL_IN_REF = re.compile(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}")
+
+
+def verify_refs(clean: Path, brand_terms: list[str]) -> list[str]:
+    """Return branch/tag names; raise if any still carries a brand term or email.
+
+    Ref names are not part of the sanitizer's file/commit scan.
+    """
+    names = run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/", "refs/tags/"],
+        cwd=clean,
+    ).stdout.splitlines()
+    bad = [
+        n
+        for n in names
+        if EMAIL_IN_REF.search(n) or any(t.lower() in n.lower() for t in brand_terms)
+    ]
+    if bad:
+        raise RuntimeError(
+            f"Ref names still carry identifying text: {', '.join(bad[:5])}"
+            f"{' ...' if len(bad) > 5 else ''}. Rename or delete them in the clean repo."
+        )
+    return names
 
 
 def load_result_json(sanitized_out: Path) -> dict:
@@ -368,12 +470,24 @@ def assert_no_secrets(clean: Path, work_root: Path) -> int:
     clean = clean.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     raw = work_root / "gitleaks.raw.json"
+    # The client repo must not be able to switch the gate off: without an explicit
+    # config gitleaks auto-loads the repo's own .gitleaks.toml / .gitleaksignore and
+    # honours inline `gitleaks:allow` comments.
+    config = work_root / "gitleaks.gate.toml"
+    config.write_text("[extend]\nuseDefault = true\n")
+    empty_ignore = work_root / "gitleaks.empty-ignore"
+    empty_ignore.write_text("")
     proc = subprocess.run(
         [
             "gitleaks",
             "detect",
             "--source",
             str(clean),
+            "--config",
+            str(config),
+            "--gitleaks-ignore-path",
+            str(empty_ignore),
+            "--ignore-gitleaks-allow",
             "--report-path",
             str(raw),
             "--exit-code",
@@ -381,6 +495,7 @@ def assert_no_secrets(clean: Path, work_root: Path) -> int:
         ],
         capture_output=True,
         text=True,
+        env={**os.environ, **GIT_HARDENING_ENV},
     )
     log = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
@@ -413,41 +528,53 @@ def assert_no_secrets(clean: Path, work_root: Path) -> int:
     return ignored
 
 
-def package_deliverable(work_root: Path, repo_slug: str) -> Path:
+# Dependency/cache trees only: vendor/build/dist can hold real source, so they ship.
+ZIP_EXCLUDES = (
+    "*/node_modules/*",
+    "*/.venv/*",
+    "*/.next/*",
+    "*/__pycache__/*",
+)
+
+
+def package_deliverable(work_root: Path, repo_slug: str, brand_terms: list[str] | None = None) -> Path:
     clean = work_root / "clean"
     zip_name = f"{repo_slug}_sanitized.zip"
     zip_path = work_root / zip_name
     if zip_path.exists():
         zip_path.unlink()
 
-    excludes = [
-        "*/node_modules/*",
-        "*/.venv/*",
-        "*/vendor/*",
-        "*/dist/*",
-        "*/build/*",
-        "*/.next/*",
-        "*/__pycache__/*",
-    ]
-    cmd = ["zip", "-r", str(zip_path), "clean", *[f"-x{pat}" for pat in excludes]]
+    ref_names = verify_refs(clean, brand_terms or [])
+
+    # -y stores symlinks as links; without it zip embeds the contents of whatever a
+    # tracked symlink points at on this host (e.g. -> /etc/passwd).
+    cmd = ["zip", "-r", "-y", str(zip_path), "clean", *[f"-x{pat}" for pat in ZIP_EXCLUDES]]
     run(cmd, cwd=work_root)
 
     commits_before = (work_root / "commit_count_before.txt").read_text().strip()
     bundle_sha = load_result_json(work_root / "sanitized").get("bundle_sha256", "unknown")
     source = ""
+    fast = False
     state_path = work_root / "run_state.json"
     if state_path.is_file():
-        source = json.loads(state_path.read_text()).get("source", "")
+        state = json.loads(state_path.read_text())
+        source = state.get("source", "")
+        fast = bool(state.get("fast_mode"))
 
     manifest = {
         "repo_slug": repo_slug,
         "source": source,
+        "mode": "fast" if fast else "normal",
+        # Fast mode skips NER and the brand pass, so the result is triage-only.
+        "not_for_external_delivery": fast,
         "commits_before": int(commits_before) if commits_before.isdigit() else commits_before,
         # History is delivered whole; the count is read back rather than assumed
         # because the sanitizer drops commits that become empty after redaction.
         "commits_delivered": int(
-            run(["git", "rev-list", "--count", "HEAD"], cwd=clean).stdout.strip()
+            run(["git", "rev-list", "--count", "--all"], cwd=clean).stdout.strip()
         ),
+        "refs": ref_names,
+        "zip_excludes": list(ZIP_EXCLUDES),
         "sanitizer_bundle_sha256": bundle_sha,
         "secret_scan": "gitleaks.json",
         "zip": zip_name,
