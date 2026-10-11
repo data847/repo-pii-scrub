@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ORCH = ROOT / "scripts" / "orchestrator.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 from batch_env import load_env_file, worker_env_from  # noqa: E402
+from steps import missing_tools, preflight_message  # noqa: E402
 
 DEFAULT_BATCH_ID = "batch"
 BATCH_ROOT = ROOT / "outputs" / DEFAULT_BATCH_ID
@@ -60,15 +61,42 @@ def _write_repo_log(slug: str, log: list[str], batch_root: Path | None = None) -
 
 
 
-def _ensure_fast_state(run_dir: Path, *, fast: bool) -> None:
+def _mode_name(fast: bool) -> str:
+    return "fast" if fast else "normal"
+
+
+def _recorded_mode(run_dir: Path, slug: str) -> str | None:
+    """Mode a finished run was produced in; manifests predating the field were normal."""
+    manifest = run_dir / "MANIFEST.json"
+    if manifest.is_file():
+        try:
+            return json.loads(manifest.read_text()).get("mode", "normal")
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
+
+
+def _ensure_mode_state(run_dir: Path, *, fast: bool) -> None:
+    """Reconcile an existing run with the requested mode.
+
+    A half-done normal run can be promoted to fast. Anything else that disagrees
+    (a fast run asked for normal, or a finished run in the other mode) is wiped:
+    a fast artifact must never be passed off as a normal one.
+    """
+    import shutil
+
     state_path = run_dir / "run_state.json"
-    if not fast or not state_path.is_file():
+    if not state_path.is_file():
         return
     state = json.loads(state_path.read_text())
-    if state.get("fast_mode"):
+    if bool(state.get("fast_mode")) == fast:
         return
-    state["fast_mode"] = True
-    state_path.write_text(json.dumps(state, indent=2) + "\n")
+    if fast and state.get("current_gate") != "done":
+        state["fast_mode"] = True
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
+        return
+    print(f"Mode changed for {run_dir.name}: discarding previous run", flush=True)
+    shutil.rmtree(run_dir)
 
 
 def _reset_stuck_sanitize(run_dir: Path, *, fast: bool) -> None:
@@ -120,6 +148,7 @@ def pipeline_repo(
         log.append(f"=== {name} (exit {code}) ===\n{out[-4000:]}")
         return code
 
+    _ensure_mode_state(run_dir, fast=fast)
     _reset_stuck_sanitize(run_dir, fast=fast)
 
     if not (run_dir / "run_state.json").is_file():
@@ -136,9 +165,10 @@ def pipeline_repo(
         ]
         if fast:
             init_cmd.append("--fast")
-        step("init", init_cmd)
-    elif fast:
-        _ensure_fast_state(run_dir, fast=True)
+        if step("init", init_cmd):
+            result = {"slug": slug, "status": "fail", "gate": "init", "log": log}
+            _write_repo_log(slug, log, root)
+            return result
 
     state_path = run_dir / "run_state.json"
     if state_path.is_file():
@@ -217,14 +247,16 @@ def _pipeline_repo_worker(payload: dict) -> dict:
     return result
 
 
-def _should_skip_resume(slug: str, *, batch_root: Path | None = None) -> bool:
+def _should_skip_resume(slug: str, *, batch_root: Path | None = None, fast: bool = False) -> bool:
     root = batch_root or BATCH_ROOT
-    if (root / slug / f"{slug}_sanitized.zip").is_file():
-        return True
-    state_path = root / slug / "run_state.json"
+    run_dir = root / slug
+    if (run_dir / f"{slug}_sanitized.zip").is_file():
+        return _recorded_mode(run_dir, slug) == _mode_name(fast)
+    state_path = run_dir / "run_state.json"
     if not state_path.is_file():
         return False
-    return json.loads(state_path.read_text()).get("current_gate") == "done"
+    state = json.loads(state_path.read_text())
+    return state.get("current_gate") == "done" and bool(state.get("fast_mode")) == fast
 
 
 def discover_repos(repos_file: Path) -> list[tuple[str, Path]]:
@@ -272,6 +304,19 @@ def discover_repos(repos_file: Path) -> list[tuple[str, Path]]:
     return out
 
 
+def collect_terms(terms: list[str], terms_file: str | None) -> list[str]:
+    out = [t.strip() for t in terms if t and t.strip()]
+    if terms_file:
+        path = Path(terms_file).expanduser()
+        if not path.is_file():
+            raise SystemExit(f"Terms file not found: {path}")
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                out.append(line)
+    return list(dict.fromkeys(out))
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Batch PII scrub pipeline")
     p.add_argument("--batch-id", default=DEFAULT_BATCH_ID)
@@ -290,11 +335,20 @@ def main() -> int:
     p.add_argument("--workers", type=int, default=1, help="Parallel repo workers (default 1)")
     p.add_argument("--resume", action="store_true", help="Skip repos already past sanitize / packaged")
     p.add_argument("--slug", action="append", help="Run only these slugs")
+    p.add_argument(
+        "--term",
+        action="append",
+        default=[],
+        help="Extra brand/org term to map in every repo (repeatable; ignored with --fast)",
+    )
+    p.add_argument("--terms-file", help="File with one brand term per line (# comments ok)")
     args = p.parse_args()
 
     global BATCH_ROOT
     BATCH_ROOT = ROOT / "outputs" / args.batch_id
     batch_root = BATCH_ROOT
+
+    brand_terms = collect_terms(args.term, args.terms_file)
 
     salt_path = ROOT / ".salt"
     if not os.environ.get("REPO_SANITIZER_SALT"):
@@ -304,13 +358,27 @@ def main() -> int:
             import secrets
 
             val = secrets.token_hex(32)
-            salt_path.write_text(val + "\n")
+            # 0600 from creation: the salt makes pseudonyms reproducible, so it is a secret.
+            fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(val + "\n")
+            os.chmod(salt_path, 0o600)
             os.environ["REPO_SANITIZER_SALT"] = val
+            print(
+                f"WARNING: REPO_SANITIZER_SALT was unset; generated a random one at {salt_path}. "
+                "Set it explicitly if you need stable pseudonyms across machines.",
+                file=sys.stderr,
+            )
 
     tools = ROOT / ".tools" / "bin"
     venv = ROOT / ".venv" / "bin"
     env = os.environ.copy()
     env["PATH"] = f"{venv}:{tools}:{env.get('PATH', '')}"
+
+    missing = missing_tools(env["PATH"])
+    if missing:
+        print(f"ERROR: {preflight_message(missing)}", file=sys.stderr)
+        return 2
 
     repos = discover_repos(Path(args.repos_file).expanduser())
     if args.slug:
@@ -325,7 +393,7 @@ def main() -> int:
     if args.resume:
         pending: list[tuple[str, Path]] = []
         for slug, path in repos:
-            if _should_skip_resume(slug, batch_root=batch_root):
+            if _should_skip_resume(slug, batch_root=batch_root, fast=args.fast):
                 print(f"SKIP (resume) {slug}", flush=True)
             else:
                 pending.append((slug, path))
@@ -341,6 +409,7 @@ def main() -> int:
             "batch_root": str(batch_root),
             "env": worker_env,
             "fast": args.fast,
+            "brand_terms": brand_terms,
         }
         for slug, path in repos
     ]
@@ -358,6 +427,7 @@ def main() -> int:
                     batch_root=batch_root,
                     env=env,
                     fast=args.fast,
+                    brand_terms=brand_terms,
                 )
             )
     else:

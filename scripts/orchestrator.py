@@ -193,10 +193,12 @@ def cmd_package(args: argparse.Namespace) -> int:
     ignored = assert_no_secrets(run_dir / "clean", run_dir)
     print(f"Secret scan clean ({ignored} redaction placeholders ignored)")
 
-    zip_path = package_deliverable(run_dir, state["repo_slug"])
+    zip_path = package_deliverable(run_dir, state["repo_slug"], state.get("brand_terms") or [])
     mark_gate(state_path, state, "package", "done")
     print("\n=== GATE 3 COMPLETE: PACKAGE ===")
     print(f"Zip: {zip_path}")
+    if _fast(state):
+        print("WARNING: fast mode (no NER, no brand pass): NOT for external delivery.")
     print(f"Manifest: {run_dir / 'MANIFEST.json'}")
     return 0
 
