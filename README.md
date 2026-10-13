@@ -79,6 +79,11 @@ says `"mode": "fast"` and `"not_for_external_delivery": true`.
 NER accounts for roughly 98% of normal-mode runtime. Every other detector is
 negligible: regex PII ~0.2 s, secrets ~0.002 s, endpoints ~0.06 s.
 
+**Timing.** `run_batch.py` prints one line per gate and one per repo to stdout, with the same format in sequential and
+parallel mode: `SCRUB-TIMING <slug> <gate> <seconds> exit=<code>` (gates: `init`, `clone`, `sanitize`, `brand-map`, `package`)
+and `SCRUB-TIMING <slug> total <seconds>`. A failed gate still prints its line, and the total is printed however the repo
+ends. On a repo with thousands of commits the `sanitize` gate (history scan and rewrite) is where the minutes go.
+
 ## NER: device and the shared service
 
 `rules/policies.yaml` sets `ner.device`. **On a host without CUDA (Apple Silicon

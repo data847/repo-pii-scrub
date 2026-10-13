@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -123,7 +124,7 @@ def _reset_stuck_sanitize(run_dir: Path, *, fast: bool) -> None:
             state_path.write_text(json.dumps(state, indent=2) + "\n")
 
 
-def pipeline_repo(
+def _pipeline_repo(
     slug: str,
     source: Path,
     *,
@@ -144,7 +145,10 @@ def pipeline_repo(
     run_id = f"{batch_id}/{slug}"
 
     def step(name: str, cmd: list[str]) -> int:
+        started = time.monotonic()
         code, out = run_step(cmd, env)
+        # one machine-readable line per gate: without it a slow repo gives no hint which gate ate the time
+        print(f"SCRUB-TIMING {slug} {name} {time.monotonic() - started:.1f} exit={code}", flush=True)
         log.append(f"=== {name} (exit {code}) ===\n{out[-4000:]}")
         return code
 
@@ -222,6 +226,15 @@ def pipeline_repo(
     }
     _write_repo_log(slug, log, root)
     return result
+
+
+def pipeline_repo(slug: str, source: Path, **kwargs) -> dict:
+    """_pipeline_repo plus one `SCRUB-TIMING <slug> total <seconds>` line, whichever way it ends."""
+    started = time.monotonic()
+    try:
+        return _pipeline_repo(slug, source, **kwargs)
+    finally:
+        print(f"SCRUB-TIMING {slug} total {time.monotonic() - started:.1f}", flush=True)
 
 
 def _pipeline_repo_worker(payload: dict) -> dict:

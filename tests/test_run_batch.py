@@ -40,6 +40,34 @@ def test_terms_reach_brand_map_gate(tmp_path, monkeypatch):
     assert brand.count("--term") == 2 and "Acme" in brand and "Beta" in brand
 
 
+def test_every_gate_and_the_total_print_a_timing_line(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "src"
+    (src / ".git").mkdir(parents=True)
+    run_dir = tmp_path / "root" / "slug"
+
+    def fake_step(cmd, env):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        gates = {"init": "clone", "clone": "sanitize", "sanitize": "brand", "brand-map": "package", "package": "done"}
+        (run_dir / "run_state.json").write_text(json.dumps({"current_gate": gates[cmd[2]], "fast_mode": False}))
+        return 0, ""
+
+    monkeypatch.setattr(run_batch, "run_step", fake_step)
+    run_batch.pipeline_repo("slug", src, batch_id="b", batch_root=tmp_path / "root", env={}, fast=False)
+    lines = [ln.split() for ln in capsys.readouterr().out.splitlines() if ln.startswith("SCRUB-TIMING")]
+    assert [(ln[1], ln[2]) for ln in lines] == [("slug", "init"), ("slug", "clone"), ("slug", "sanitize"), ("slug", "brand-map"),
+                                                 ("slug", "package"), ("slug", "total")]
+    assert all(float(ln[3]) >= 0 for ln in lines) and lines[0][4] == "exit=0" and len(lines[-1]) == 4
+
+
+def test_a_failed_gate_still_reports_its_time_and_the_total(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "src"
+    (src / ".git").mkdir(parents=True)
+    monkeypatch.setattr(run_batch, "run_step", lambda cmd, env: (1, "boom"))
+    run_batch.pipeline_repo("slug", src, batch_id="b", batch_root=tmp_path / "root", env={}, fast=False)
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("SCRUB-TIMING slug init ") and out[0].endswith("exit=1") and out[-1].startswith("SCRUB-TIMING slug total ")
+
+
 def test_init_failure_stops(tmp_path, monkeypatch):
     src = tmp_path / "src"
     (src / ".git").mkdir(parents=True)
