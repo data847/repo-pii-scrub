@@ -248,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Extra path to delete from all history before redaction (repeatable): a "
                              "git-filter-repo glob, or `name/` for a directory at any depth")
     init_p.add_argument("--no-default-prune", action="store_true",
-                        help="Do not prune the default set (*.sql *.csv *.tsv *.log *.dump, vendored "
+                        help="Do not prune the default set (*.sql *.csv *.tsv *.xml *.log *.dump, vendored "
                              "library dirs, *.min.js/css)")
     init_p.add_argument("--no-auto-domains", action="store_true",
                         help="Do not derive brand terms from commit author email domains")

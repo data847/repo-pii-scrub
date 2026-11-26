@@ -82,7 +82,7 @@ By default the company is also derived from author email domains (free-mail,
 GitHub/GitLab and `example`/`localhost` domains are ignored).
 
 **Default prune set** (removed from every commit, before any scrubbing, in a copy
-of the source): `*.sql *.csv *.tsv *.log *.dump`, vendored library directories
+of the source): `*.sql *.csv *.tsv *.xml *.log *.dump`, vendored library directories
 (`node_modules/ bower_components/ jspm_packages/ vendor/ third_party/ third-party/
 Pods/ Carthage/ site-packages/ .venv/ venv/`) and `*.min.js *.min.css`. Data dumps
 can hold secrets and PII in shapes no regex covers, so they are dropped rather than

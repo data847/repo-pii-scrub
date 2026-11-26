@@ -148,7 +148,7 @@ def clone_or_copy_source(source: str, dest: Path, *, fast: bool = False, mutate:
 # outright rather than scrubbed. A trailing "/" means "a directory of this name at
 # any depth"; anything else is a raw git-filter-repo --path-glob.
 DEFAULT_PRUNE = (
-    "*.sql", "*.csv", "*.tsv", "*.log", "*.dump",
+    "*.sql", "*.csv", "*.tsv", "*.xml", "*.log", "*.dump",
     "node_modules/", "bower_components/", "jspm_packages/", "vendor/", "third_party/",
     "third-party/", "Pods/", "Carthage/", "site-packages/", ".venv/", "venv/",
     "*.min.js", "*.min.css",
