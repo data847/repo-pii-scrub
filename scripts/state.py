@@ -27,6 +27,7 @@ def init_run(
     source: str,
     rulepack: str,
     fast_mode: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     data = {
         "run_id": run_id,
@@ -37,6 +38,7 @@ def init_run(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "current_gate": "clone",
         "gates_completed": [],
+        **(extra or {}),
     }
     save(path, data)
     return data

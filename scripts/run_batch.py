@@ -104,6 +104,7 @@ def pipeline_repo(
     env: dict,
     fast: bool,
     brand_terms: list[str] | None = None,
+    init_args: list[str] | None = None,
 ) -> dict:
     log: list[str] = []
     root = batch_root or BATCH_ROOT
@@ -136,6 +137,7 @@ def pipeline_repo(
         ]
         if fast:
             init_cmd.append("--fast")
+        init_cmd.extend(init_args or ())
         step("init", init_cmd)
     elif fast:
         _ensure_fast_state(run_dir, fast=True)
@@ -210,6 +212,7 @@ def _pipeline_repo_worker(payload: dict) -> dict:
             env=env,
             fast=payload["fast"],
             brand_terms=payload.get("brand_terms"),
+            init_args=payload.get("init_args"),
         )
     except Exception as exc:  # noqa: BLE001
         result = {"slug": payload["slug"], "status": "fail", "gate": "worker", "error": str(exc), "log": []}
@@ -290,6 +293,11 @@ def main() -> int:
     p.add_argument("--workers", type=int, default=1, help="Parallel repo workers (default 1)")
     p.add_argument("--resume", action="store_true", help="Skip repos already past sanitize / packaged")
     p.add_argument("--slug", action="append", help="Run only these slugs")
+    p.add_argument("--company", action="append", default=[], help="Your company/brand name (repeatable); redacted in code, domains and history")
+    p.add_argument("--domain", action="append", default=[], help="Company domain (repeatable)")
+    p.add_argument("--prune", action="append", default=[], help="Extra path/glob to delete from history first (repeatable; `dir/` = any-depth directory)")
+    p.add_argument("--no-default-prune", action="store_true", help="Keep csv/sql/log files and vendored library code")
+    p.add_argument("--no-auto-domains", action="store_true", help="Do not derive brand terms from author email domains")
     args = p.parse_args()
 
     global BATCH_ROOT
@@ -331,6 +339,15 @@ def main() -> int:
                 pending.append((slug, path))
         repos = pending
 
+    init_args: list[str] = []
+    for flag, vals in (("--company", args.company), ("--domain", args.domain), ("--prune", args.prune)):
+        for v in vals:
+            init_args += [flag, v]
+    if args.no_default_prune:
+        init_args.append("--no-default-prune")
+    if args.no_auto_domains:
+        init_args.append("--no-auto-domains")
+
     worker_env = worker_env_from(env)
 
     payloads = [
@@ -341,6 +358,7 @@ def main() -> int:
             "batch_root": str(batch_root),
             "env": worker_env,
             "fast": args.fast,
+            "init_args": init_args,
         }
         for slug, path in repos
     ]
@@ -358,6 +376,7 @@ def main() -> int:
                     batch_root=batch_root,
                     env=env,
                     fast=args.fast,
+                    init_args=init_args,
                 )
             )
     else:

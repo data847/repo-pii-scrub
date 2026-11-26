@@ -78,6 +78,13 @@ deny_globs:
   - "**/vault.yaml"
   - "**/*vault*"
 
+  # ── Data dumps (pruned from all history; can hold secrets/PII in any shape) ─
+  - "**/*.sql"
+  - "**/*.csv"
+  - "**/*.tsv"
+  - "**/*.log"
+  - "**/*.dump"
+
   # ── Git special files ─────────────────────────────────────────────────────
   - "**/.mailmap"
   - "**/CODEOWNERS"

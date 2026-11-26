@@ -66,6 +66,32 @@ python scripts/orchestrator.py brand-map --run-dir $RUN --term MyCompany
 python scripts/orchestrator.py package   --run-dir $RUN
 ```
 
+## Company names, domains and pruning
+
+Set these once at the start (`init`, or `run_batch.py` flags that pass through to it):
+
+| Flag | Effect |
+|------|--------|
+| `--company "Acme Corp"` (repeatable) | Redacted wherever it appears in code and git history. Seeds the brand pass, **also in `--fast` mode**. |
+| `--domain acme.com` (repeatable) | The domain and its name label (`acme`) are both redacted, so `test.acme.com` and `stage.acme.com` become `test.ANON_ORG_….com`. |
+| `--prune GLOB` (repeatable) | Extra path deleted from **all history before redaction**. A trailing `/` means a directory at any depth. |
+| `--no-default-prune` | Keep the default prune set. |
+| `--no-auto-domains` | Do not derive brand terms from commit author email domains. |
+
+By default the company is also derived from author email domains (free-mail,
+GitHub/GitLab and `example`/`localhost` domains are ignored).
+
+**Default prune set** (removed from every commit, before any scrubbing, in a copy
+of the source): `*.sql *.csv *.tsv *.log *.dump`, vendored library directories
+(`node_modules/ bower_components/ jspm_packages/ vendor/ third_party/ third-party/
+Pods/ Carthage/ site-packages/ .venv/ venv/`) and `*.min.js *.min.css`. Data dumps
+can hold secrets and PII in shapes no regex covers, so they are dropped rather than
+scrubbed.
+
+```bash
+python scripts/run_batch.py --repos-file repos.txt --company "Acme Corp" --domain acme.com
+```
+
 ## Normal vs fast mode
 
 `--fast` at `init` turns NER off and skips the brand pass. On a 1 MB / 473-file /

@@ -28,6 +28,10 @@ from batch_env import load_env_file  # noqa: E402
 from state import init_run, load, save  # noqa: E402
 from steps import (  # noqa: E402
     apply_brand_map,
+    author_domain_terms,
+    company_terms,
+    prune_history,
+    prune_patterns,
     assert_no_secrets,
     brand_pseudonym,
     brand_worklist_terms,
@@ -82,6 +86,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         source=args.source,
         rulepack=str(rulepack),
         fast_mode=bool(args.fast),
+        extra={
+            "company_terms": company_terms(args.company, args.domain),
+            "prune_globs": prune_patterns(args.prune, defaults=not args.no_default_prune),
+            "auto_domains": not args.no_auto_domains,
+        },
     )
     print(json.dumps({"run_dir": str(run_dir), **state}, indent=2))
     return 0
@@ -96,8 +105,16 @@ def cmd_clone(args: argparse.Namespace) -> int:
 
     source = args.source or state["source"]
     dest = run_dir / "source"
-    clone_or_copy_source(source, dest, fast=_fast(state))
+    prune = state.get("prune_globs", [])
+    clone_or_copy_source(source, dest, fast=_fast(state), mutate=bool(prune))
     baseline = record_baseline(dest, run_dir)
+    if prune:
+        # Before ANY redaction: csv/sql/log files and vendored library code leave the
+        # whole history, so nothing in them can survive a missed regex.
+        state.update(prune_history(dest, prune))
+        baseline["pruned_globs"] = prune
+    if state.get("auto_domains", True):
+        state["auto_brand_terms"] = author_domain_terms(dest)
     mark_gate(state_path, state, "clone", "sanitize")
     print("\n=== GATE 1 COMPLETE: CLONE ===")
     print(json.dumps({"source": str(dest), **baseline}, indent=2))
@@ -130,7 +147,7 @@ def cmd_sanitize(args: argparse.Namespace) -> int:
 
     # Normal mode always continues into Pass-2/Pass-3, which is where the clean
     # clone is materialized. Fast mode has no brand pass.
-    if not _fast(state):
+    if not _fast(state) or state.get("company_terms") or state.get("auto_brand_terms"):
         state["brand_worklist"] = worklist
         mark_gate(state_path, state, "sanitize", "brand")
         print("\n=== GATE 2 COMPLETE: SANITIZE ===")
@@ -157,7 +174,8 @@ def cmd_brand_map(args: argparse.Namespace) -> int:
     sanitized = run_dir / "sanitized"
     # Only explicit --term seeds: deriving terms from the slug would map generic
     # words ("repo", "app") and mangle unrelated content.
-    terms = brand_worklist_terms(sanitized, extra_terms=tuple(args.term or ()))
+    seeds = [*(args.term or ()), *state.get("company_terms", []), *state.get("auto_brand_terms", [])]
+    terms = brand_worklist_terms(sanitized, extra_terms=tuple(seeds))
 
     if not terms:
         print("No brand terms to map; carrying Pass-1 bundle forward.")
@@ -221,6 +239,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fast mode: symlink source, NER off, no brand pass (regex/secrets only)",
     )
+    init_p.add_argument("--company", action="append", default=[],
+                        help="Your company/brand name (repeatable): redacted wherever it appears in code, "
+                             "domains (test.<company>.com) and history, even in --fast mode")
+    init_p.add_argument("--domain", action="append", default=[],
+                        help="Company domain (repeatable); the domain and its name label are both redacted")
+    init_p.add_argument("--prune", action="append", default=[],
+                        help="Extra path to delete from all history before redaction (repeatable): a "
+                             "git-filter-repo glob, or `name/` for a directory at any depth")
+    init_p.add_argument("--no-default-prune", action="store_true",
+                        help="Do not prune the default set (*.sql *.csv *.tsv *.log *.dump, vendored "
+                             "library dirs, *.min.js/css)")
+    init_p.add_argument("--no-auto-domains", action="store_true",
+                        help="Do not derive brand terms from commit author email domains")
     init_p.add_argument("--env-file")
     init_p.set_defaults(func=cmd_init)
 

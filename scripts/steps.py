@@ -123,7 +123,8 @@ def _sanitizer_fast_args(fast: bool) -> list[str]:
     return args
 
 
-def clone_or_copy_source(source: str, dest: Path, *, fast: bool = False) -> None:
+def clone_or_copy_source(source: str, dest: Path, *, fast: bool = False, mutate: bool = False) -> None:
+    """`mutate`: the copy will be rewritten (pruned), so never symlink the original."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
         if dest.is_symlink():
@@ -132,12 +133,108 @@ def clone_or_copy_source(source: str, dest: Path, *, fast: bool = False) -> None
             shutil.rmtree(dest)
     src_path = Path(source)
     if src_path.is_dir():
-        if fast:
+        if fast and not mutate:
             dest.symlink_to(src_path.resolve(), target_is_directory=True)
         else:
             shutil.copytree(src_path, dest, symlinks=True)
     else:
         run(["git", "clone", source, str(dest)])
+
+
+# ── Pre-sanitize pruning ──────────────────────────────────────────────────────
+# Files and directories removed from EVERY commit before any redaction runs. Data
+# dumps (.sql/.csv/.log) can carry secrets and PII in shapes no regex covers, and
+# vendored library code is third-party, not the author's, so both are dropped
+# outright rather than scrubbed. A trailing "/" means "a directory of this name at
+# any depth"; anything else is a raw git-filter-repo --path-glob.
+DEFAULT_PRUNE = (
+    "*.sql", "*.csv", "*.tsv", "*.log", "*.dump",
+    "node_modules/", "bower_components/", "jspm_packages/", "vendor/", "third_party/",
+    "third-party/", "Pods/", "Carthage/", "site-packages/", ".venv/", "venv/",
+    "*.min.js", "*.min.css",
+)
+
+
+def prune_patterns(extra: list[str] | None = None, *, defaults: bool = True) -> list[str]:
+    """Expand the prune list to git-filter-repo path globs (fnmatch; `*` crosses `/`)."""
+    out: list[str] = []
+    for item in [*(DEFAULT_PRUNE if defaults else ()), *(extra or ())]:
+        item = item.strip()
+        if not item:
+            continue
+        if item.endswith("/"):
+            name = item.rstrip("/")
+            out += [f"{name}/*", f"*/{name}/*"]
+        else:
+            out.append(item)
+    return list(dict.fromkeys(out))
+
+
+def prune_history(repo: Path, globs: list[str]) -> dict:
+    """Delete every path matching `globs` from the whole history of `repo` (in place)."""
+    if not globs:
+        return {"pruned_globs": []}
+    cmd = ["git", "filter-repo", "--force", "--invert-paths"]
+    for g in globs:
+        cmd += ["--path-glob", g]
+    run(cmd, cwd=repo)
+    return {"pruned_globs": globs}
+
+
+# ── Company / domain seeds for the brand pass ─────────────────────────────────
+# Author-email domains that say nothing about the company (and must never become a
+# brand term, or every `gmail` in the code would be rewritten).
+FREE_MAIL = {
+    "gmail", "googlemail", "yahoo", "ymail", "outlook", "hotmail", "live", "msn", "icloud",
+    "me", "mac", "aol", "proton", "protonmail", "pm", "gmx", "mail", "yandex", "ya", "rambler",
+    "qq", "163", "126", "zoho", "hey", "fastmail", "github", "gitlab", "bitbucket", "example",
+    "localhost", "localdomain", "users", "noreply", "invalid", "local", "internal", "test",
+}
+_SLD_SUFFIX = {"co", "com", "org", "net", "gov", "edu", "ac", "or", "ne"}
+
+
+def domain_label(domain: str) -> str | None:
+    """`test.snapdeal.com` -> `snapdeal`; `foo.co.uk` -> `foo`; None for free-mail etc."""
+    parts = [p for p in domain.lower().strip(".").split(".") if p]
+    if len(parts) < 2:
+        return None
+    parts = parts[:-1]                                   # drop the TLD
+    if len(parts) > 1 and parts[-1] in _SLD_SUFFIX:
+        parts = parts[:-1]
+    label = parts[-1]
+    if len(label) < 4 or label in FREE_MAIL or not re.fullmatch(r"[a-z0-9-]+", label):
+        return None
+    return label
+
+
+def company_terms(companies: list[str] | None, domains: list[str] | None) -> list[str]:
+    """User-supplied company names and domains -> brand terms (a domain also seeds its label)."""
+    terms: dict[str, None] = {}
+    for c in companies or ():
+        c = c.strip()
+        if len(c) >= 3:
+            terms.setdefault(c, None)
+    for d in domains or ():
+        d = re.sub(r"^https?://", "", d.strip().lower()).split("/")[0].lstrip("*.")
+        if not d:
+            continue
+        terms.setdefault(d, None)
+        label = domain_label(d)
+        if label:
+            terms.setdefault(label, None)
+    return list(terms)
+
+
+def author_domain_terms(repo: Path) -> list[str]:
+    """Brand terms derived from the commit author/committer email domains."""
+    out = run(["git", "log", "--all", "--format=%ae%n%ce"], cwd=repo).stdout
+    seen: dict[str, None] = {}
+    for line in out.splitlines():
+        if "@" in line:
+            label = domain_label(line.rsplit("@", 1)[1])
+            if label:
+                seen.setdefault(label, None)
+    return list(seen)
 
 
 def record_baseline(repo: Path, work_root: Path) -> dict:
