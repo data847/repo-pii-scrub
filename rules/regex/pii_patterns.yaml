@@ -112,7 +112,9 @@ patterns:
     severity: CRITICAL
 
   - name: pem_private_key
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    # Whole block when the footer is present (body would otherwise survive the header mask);
+    # header-only otherwise.
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s:,._\\-]{20,16384}?-----END [A-Z ]*PRIVATE KEY-----)?'
     category: SECRET
     severity: CRITICAL
 
@@ -317,3 +319,124 @@ patterns:
   # `uuid` was REMOVED — GUIDs are opaque/non-identifying and masking them breaks
   # .sln/MSBuild project references (dotnet build). Tenant/device-correlating
   # UUIDs are a residual covered by the mandatory Pass-2/codex audit.
+
+  # ════════════════════════════════════════════════════════════════
+  # PUBLIC KEYS — a public key is not secret, but it fingerprints the
+  # person/host that owns it (the trailing `user@host` comment is PII).
+  # Masked to REDACTED_<NAME>_<hash> like the other non-grouped patterns.
+  # ════════════════════════════════════════════════════════════════
+
+  - name: ssh_public_key
+    # OpenSSH one-line public key (authorized_keys / known_hosts / id_*.pub / inline
+    # literals): `ssh-rsa AAAA… user@host`. The base64 blob is always >=40 chars and
+    # starts AAAA, so prose like "ssh-rsa key" never matches. The optional trailing
+    # comment (same line, no quotes) is swallowed — it is usually `user@host`.
+    pattern: '\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[ \t]+AAAA[0-9A-Za-z+/]{40,}={0,3}(?:[ \t]+[^\s"''<>]+)?'
+    category: SECRET
+    severity: HIGH
+
+  - name: pem_public_key
+    # PEM / PGP / SSH2 public-key block, whole block (header..footer). Bounded so a
+    # stray header can never swallow the rest of a file.
+    pattern: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PUBLIC KEY-----[A-Za-z0-9+/=\s:,._\\-]{20,16384}?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PUBLIC KEY-----|-----BEGIN PGP PUBLIC KEY BLOCK-----[\s\S]{20,65536}?-----END PGP PUBLIC KEY BLOCK-----|---- BEGIN SSH2 PUBLIC KEY ----[\s\S]{20,8192}?---- END SSH2 PUBLIC KEY ----'
+    category: SECRET
+    severity: HIGH
+
+  # ════════════════════════════════════════════════════════════════
+  # IN-CODE ACCESS KEYS — vendor-prefixed literals that appear bare in
+  # source (no `key =` keyword for config_assignment_secret to anchor on).
+  # ════════════════════════════════════════════════════════════════
+
+  - name: openai_api_key
+    pattern: '\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,}|[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|[A-Za-z0-9]{48})\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: anthropic_api_key
+    pattern: '\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{40,}'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: huggingface_token
+    pattern: '\bhf_[A-Za-z0-9]{34,}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: groq_api_key
+    pattern: '\bgsk_[A-Za-z0-9]{52}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: replicate_api_token
+    pattern: '\br8_[A-Za-z0-9]{37}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: digitalocean_token
+    pattern: '\bdo[por]_v1_[a-f0-9]{64}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: shopify_token
+    pattern: '\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: docker_hub_pat
+    pattern: '\bdckr_pat_[A-Za-z0-9_-]{27,}'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: databricks_token
+    pattern: '\bdapi[a-f0-9]{32}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: hashicorp_vault_token
+    pattern: '\bhv[sb]\.[A-Za-z0-9_-]{24,}'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: doppler_token
+    pattern: '\bdp\.(?:pt|st|sa|ct|scim|audit)\.[A-Za-z0-9]{40,}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: square_token
+    pattern: '\bsq0(?:atp|csp)-[A-Za-z0-9_-]{22,43}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: notion_token
+    pattern: '\b(?:secret_[A-Za-z0-9]{43}|ntn_[A-Za-z0-9]{40,})\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: sentry_auth_token
+    pattern: '\bsntrys_[A-Za-z0-9+/=_-]{60,}'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: mailgun_api_key
+    pattern: '\bkey-[0-9a-f]{32}\b'
+    category: SECRET
+    severity: HIGH
+
+  - name: discord_bot_token
+    pattern: '\b[MN][A-Za-z0-9]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}\b'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: azure_storage_account_key
+    # Azure storage / Service Bus / Event Hubs connection-string key — value only
+    # (lookbehind keeps `AccountKey=` so the string stays parseable).
+    pattern: '(?<=AccountKey=)[A-Za-z0-9+/]{40,}={0,2}|(?<=SharedAccessKey=)[A-Za-z0-9+/]{40,}={0,2}'
+    category: SECRET
+    severity: CRITICAL
+
+  - name: gcp_private_key_id
+    # Service-account JSON key id (value only; the PEM next to it is masked by
+    # pem_private_key, which tolerates JSON-escaped \n in the body).
+    pattern: '"private_key_id"\s*:\s*"([0-9a-f]{40})"'
+    category: SECRET
+    severity: HIGH
