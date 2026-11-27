@@ -209,4 +209,5 @@ ner:
   # Override per-run with PII_SCRUB_NER_DEVICE.
   device: cpu
 
-max_file_mb: 20
+# No size cap: every text file and history blob is scanned (was 20). Memory per file = file size.
+max_file_mb: 1048576
