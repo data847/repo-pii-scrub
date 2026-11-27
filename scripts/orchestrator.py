@@ -30,6 +30,7 @@ from steps import (  # noqa: E402
     apply_brand_map,
     author_domain_terms,
     company_terms,
+    copyright_terms,
     prune_history,
     prune_patterns,
     assert_no_secrets,
@@ -114,7 +115,8 @@ def cmd_clone(args: argparse.Namespace) -> int:
         state.update(prune_history(dest, prune))
         baseline["pruned_globs"] = prune
     if state.get("auto_domains", True):
-        state["auto_brand_terms"] = author_domain_terms(dest)
+        # Author-email domains + legal entity names from copyright headers.
+        state["auto_brand_terms"] = [*author_domain_terms(dest), *copyright_terms(dest)]
     mark_gate(state_path, state, "clone", "sanitize")
     print("\n=== GATE 1 COMPLETE: CLONE ===")
     print(json.dumps({"source": str(dest), **baseline}, indent=2))

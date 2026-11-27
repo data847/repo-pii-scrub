@@ -237,6 +237,42 @@ def author_domain_terms(repo: Path) -> list[str]:
     return list(seen)
 
 
+# ── Company name from copyright headers ───────────────────────────────────────
+# `Copyright 2016 Acme Technologies (P) Limited. All rights reserved.` names the
+# legal entity in every file header. Entities with a legal-form suffix that occur in
+# >= 2 files are seeded automatically, except well-known public licensors.
+_PUBLIC_LICENSORS = (
+    "apache", "foundation", "oracle", "sun microsystems", "google", "microsoft", "facebook",
+    "meta platforms", "mozilla", "eclipse", "jetbrains", "red hat", "jboss", "pivotal", "vmware",
+    "spring", "ibm", "amazon", "the regents", "free software", "mit", "gnu", "intel", "nvidia",
+    "twitter", "netflix", "linkedin", "square", "stripe", "elastic", "hashicorp", "docker",
+    "the authors", "contributors", "all rights", "your name", "company name", "yourcompany",
+)
+_COPYRIGHT_RE = re.compile(
+    r"(?i)copyright\s*(?:\(c\)|\u00a9|&copy;)?\s*(?:19|20)\d{2}(?:\s*[-\u2013,]\s*(?:19|20)\d{2})*\.?\s+(?:by\s+)?"
+    r"([A-Z][A-Za-z0-9&.,'\- ]{1,70}?)\s*(?:\(P\)\s*)?"
+    r"(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?|Incorporated|Inc\.?|LLC|GmbH|Corporation|Corp\.?)\b"
+)
+
+
+def copyright_terms(repo: Path, *, min_files: int = 2) -> list[str]:
+    """Legal-entity names found in copyright headers of the checked-out tree."""
+    proc = subprocess.run(
+        ["git", "grep", "-I", "-i", "-E", "copyright[^a-z]*(19|20)[0-9]{2}"],
+        cwd=str(repo), capture_output=True, text=True, errors="replace",
+    )
+    counts: dict[str, set[str]] = {}
+    for line in proc.stdout.splitlines():
+        path, _, text = line.partition(":")
+        for m in _COPYRIGHT_RE.finditer(text):
+            name = re.sub(r"\s+", " ", m.group(1)).strip(" .,-")
+            low = name.lower()
+            if len(name) < 3 or any(p in low for p in _PUBLIC_LICENSORS):
+                continue
+            counts.setdefault(name, set()).add(path)
+    return [n for n, files in sorted(counts.items(), key=lambda kv: -len(kv[1])) if len(files) >= min_files]
+
+
 def record_baseline(repo: Path, work_root: Path) -> dict:
     total = run(["git", "rev-list", "--count", "HEAD"], cwd=repo).stdout.strip()
     head = run(["git", "log", "-1", "--format=%H %ci %s"], cwd=repo).stdout.strip()

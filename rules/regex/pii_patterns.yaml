@@ -440,3 +440,72 @@ patterns:
     pattern: '"private_key_id"\s*:\s*"([0-9a-f]{40})"'
     category: SECRET
     severity: HIGH
+
+  # ════════════════════════════════════════════════════════════════
+  # Audit-report gaps (fast mode, no NER): names in comments, home paths,
+  # bare phone numbers, private IPs, AWS service hostnames, Postman ids.
+  # ════════════════════════════════════════════════════════════════
+
+  - name: author_tag_name
+    # Person name after a comment tag: `@author Jane Doe`, `@author jane.doe`,
+    # `Created by: Jane Doe`, `Author: J. Doe`. Takes the tag's name only (1 token,
+    # then up to two Capitalised ones) so trailing prose is left alone.
+    pattern: '(?:@author|\b[Cc]reated[ \t]+[Bb]y|\b[Aa]uthor)[ \t]*:?[ \t]+[A-Za-z][\w.''-]*(?:[ \t]+[A-Z][\w.''-]*){0,2}'
+    category: PII
+    severity: HIGH
+
+  - name: user_annotation_name
+    # `User: jane` / `@user jane` annotations Javadoc templates and IDE headers add.
+    pattern: '(?:@user\b|^[ \t*/#]*User)[ \t]*:?[ \t]+[A-Za-z][\w.''-]{2,}'
+    category: PII
+    severity: MEDIUM
+
+  - name: home_dir_user
+    # OS account name inside a home path: /Users/jane/…  /home/jane/…  C:\Users\jane\…
+    # (value only; generic account names are left alone).
+    pattern: '(?<=/Users/)(?!(?:Shared|Public|Guest|user|name|username|you|me|runner|admin)\b)[A-Za-z][\w.-]{1,40}(?=/)|(?<=/home/)(?!(?:user|name|username|you|me|runner|ubuntu|ec2-user|admin|node|app|git|jenkins)\b)[A-Za-z][\w.-]{1,40}(?=/)|(?<=\\Users\\)(?!(?:Public|Default|user|name|username|you|me|Administrator)\b)[A-Za-z][\w.-]{1,40}(?=\\)'
+    category: PII
+    severity: HIGH
+
+  - name: phone_in_mobile_line
+    # Indian mobile (10 digits, 6-9 lead, optional +91/91/0) alone on a line — the
+    # shape of bulk blacklist / contact files that no keyword anchors.
+    pattern: '(?m)^[ \t]*(?:\+?91[ -]?|0)?[6-9]\d{9}[ \t]*(?=\r?$)'
+    category: PII
+    severity: CRITICAL
+
+  - name: phone_ru_keyed
+    # (Name reused on purpose: the scrubber routes `phone_ru_keyed` to "mask group 1
+    # only, keep the key" — exactly what a keyed phone needs; see history_ops.)
+    # Indian mobile after a phone-ish key: mobile=98…  "phone": "+91 98…"  msisdn:98…
+    pattern: '(?i)\b(?:mobile|phone|msisdn|contact|mob|cell|whatsapp)\w{0,12}["''\s:=>-]{1,6}((?:\+?91[ -]?|0)?[6-9]\d{4}[ -]?\d{5})(?![0-9A-Za-z])'
+    category: PII
+    severity: HIGH
+
+  - name: phone_in_landline
+    # Indian landline with STD code and a hyphen: 011-66786500, 0124-4567890.
+    pattern: '(?<![0-9A-Za-z.+-])0\d{2,4}-\d{6,8}(?![0-9A-Za-z-])'
+    category: PII
+    severity: HIGH
+
+  - name: private_ipv4
+    # RFC 1918 addresses (10/8, 172.16/12, 192.168/16): the engine keeps these so
+    # builds survive, but they expose production topology (Kafka brokers, DB hosts,
+    # internal git). Masked to REDACTED_PRIVATE_IPV4_<hash>; loopback / 0.0.0.0 stay.
+    # Not followed by `.digit` so 5-part strings and OIDs are skipped.
+    pattern: '(?<![0-9A-Za-z.])(?:10\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|172\.(?:1[6-9]|2\d|3[01])\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|192\.168\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d))(?![0-9]|\.[0-9])'
+    category: ENDPOINT
+    severity: HIGH
+
+  - name: aws_service_hostname
+    # Load balancer / RDS / cache / API-gateway hostnames: reveal org, env, region.
+    # Wildcards (`internal-prd-x-*.ap-southeast-1.elb…`) included.
+    pattern: '[A-Za-z0-9*][A-Za-z0-9*._-]*\.(?:elb|rds|cache|elasticache|es|redshift|docdb|kafka|execute-api)\.amazonaws\.com(?:\.cn)?|\bec2-\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\.[a-z0-9.-]*compute[a-z0-9.-]*\.amazonaws\.com(?:\.cn)?'
+    category: ENDPOINT
+    severity: HIGH
+
+  - name: postman_id
+    # Postman collection ids / tokens (UUID value only; surrounding JSON stays valid).
+    pattern: '(?i)(?<=_postman_id": ")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=_postman_id":")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=Postman-Token", "value": ")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=Postman-Token","value":")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    category: SECRET
+    severity: LOW
