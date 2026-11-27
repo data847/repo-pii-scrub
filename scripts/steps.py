@@ -218,10 +218,10 @@ def company_terms(companies: list[str] | None, domains: list[str] | None) -> lis
         d = re.sub(r"^https?://", "", d.strip().lower()).split("/")[0].lstrip("*.")
         if not d:
             continue
-        terms.setdefault(d, None)
+        # The name label covers every subdomain/TLD (test.acme.com, acme.io); a separate
+        # `acme.com` row would map the same hosts to a *different* pseudonym.
         label = domain_label(d)
-        if label:
-            terms.setdefault(label, None)
+        terms.setdefault(label or d, None)
     return list(terms)
 
 
@@ -344,13 +344,49 @@ def failing_gates(result: dict) -> set[str]:
     }
 
 
-def brand_worklist_terms(sanitized_out: Path, extra_terms: tuple[str, ...] = ()) -> list[str]:
-    """Brand tokens to map, from the Pass-1 worklist findings plus caller-supplied names."""
+# Machine names, OS words and account names that the Pass-1 worklist picks up from
+# author identities / hostnames. As global case-insensitive substring rules they
+# rewrite ordinary code (`com`, `test`, `user`, `new`) and are not brands.
+NOISE_TERMS = frozenset(
+    {
+        "com", "org", "net", "io", "www", "test", "tests", "testing", "user", "users",
+        "admin", "administrator", "administrators", "root", "host", "localhost", "local",
+        "new", "non", "pro", "mac", "macbook", "imac", "laptop", "latitude", "lenovo",
+        "thinkpad", "ubuntu", "machine", "virtual", "compute", "side", "apple", "apples",
+        "exclusively", "default", "demo", "sample", "example", "dev", "prod", "stage",
+        "staging", "build", "master", "main", "windows", "linux", "desktop", "server",
+    }
+)
+MIN_WORKLIST_LEN = 4
+
+
+def _collides_with_pseudonyms(term: str, terms: list[str]) -> bool:
+    """A term that occurs inside `ANON_ORG_<hash>` (or any other pseudonym) would match
+    its own replacement, so apply-map's re-check can never pass (`non` in `ANON_ORG`)."""
+    t = term.lower()
+    return any(t in brand_pseudonym(o).lower() for o in terms) or t in "anon_org_"
+
+
+def brand_worklist_terms(
+    sanitized_out: Path,
+    extra_terms: tuple[str, ...] = (),
+    *,
+    seeds: tuple[str, ...] = (),
+    use_worklist: bool = True,
+) -> list[str]:
+    """Brand terms to map.
+
+    * `seeds` — company names / domain labels the user (or the author-email derivation)
+      supplied: taken VERBATIM (never split on `.`), exempt from the noise filter.
+    * Pass-1 worklist findings + `extra_terms` — tokenised, then filtered: stopwords,
+      machine/account noise, terms < 4 chars, and anything that would match inside a
+      pseudonym. `use_worklist=False` (fast mode) skips the findings altogether.
+    """
     report = sanitized_out / "artifacts" / "scan_report_post.json"
     work = sanitized_out / "work"
     spans: list[str] = []
 
-    if report.is_file():
+    if use_worklist and report.is_file():
         try:
             findings = json.loads(report.read_text())
         except (OSError, json.JSONDecodeError):
@@ -362,13 +398,21 @@ def brand_worklist_terms(sanitized_out: Path, extra_terms: tuple[str, ...] = ())
             if text:
                 spans.append(text)
 
-    terms: dict[str, None] = {}
-    for raw in (*spans, *extra_terms):
+    terms: dict[str, str] = {}                      # lower-case key -> first spelling
+    for seed in seeds:
+        seed = seed.strip()
+        if seed:
+            terms.setdefault(seed.lower(), seed)
+    for raw in ([*spans, *extra_terms] if use_worklist else list(extra_terms)):
         for token in _BRAND_TOKEN.findall(raw):
-            if token.lower() in BRAND_STOPWORDS:
+            low = token.lower()
+            if low in BRAND_STOPWORDS or low in NOISE_TERMS or len(token) < MIN_WORKLIST_LEN:
                 continue
-            terms.setdefault(token, None)
-    return sorted(terms, key=lambda t: (-len(t), t.lower()))
+            terms.setdefault(low, token)
+    # Rows are case-insensitive, so `Snapdeal`/`snapdeal` is ONE row (two rows collide).
+    out = list(terms.values())
+    out = [t for t in out if not _collides_with_pseudonyms(t, out)]
+    return sorted(out, key=lambda t: (-len(t), t.lower()))
 
 
 def _resolve_span(work: Path, finding: dict) -> str:

@@ -174,8 +174,14 @@ def cmd_brand_map(args: argparse.Namespace) -> int:
     sanitized = run_dir / "sanitized"
     # Only explicit --term seeds: deriving terms from the slug would map generic
     # words ("repo", "app") and mangle unrelated content.
-    seeds = [*(args.term or ()), *state.get("company_terms", []), *state.get("auto_brand_terms", [])]
-    terms = brand_worklist_terms(sanitized, extra_terms=tuple(seeds))
+    # Fast mode never used the Pass-1 worklist (hostnames / account names / author first
+    # names): only the user's company terms and the author-email-derived ones apply.
+    terms = brand_worklist_terms(
+        sanitized,
+        extra_terms=tuple(args.term or ()),
+        seeds=(*state.get("company_terms", []), *state.get("auto_brand_terms", [])),
+        use_worklist=not _fast(state),
+    )
 
     if not terms:
         print("No brand terms to map; carrying Pass-1 bundle forward.")
