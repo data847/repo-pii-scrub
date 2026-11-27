@@ -152,6 +152,10 @@ DEFAULT_PRUNE = (
     "node_modules/", "bower_components/", "jspm_packages/", "vendor/", "third_party/",
     "third-party/", "Pods/", "Carthage/", "site-packages/", ".venv/", "venv/",
     "*.min.js", "*.min.css",
+    # Files that are lists of people.
+    "AUTHORS", "*/AUTHORS", "AUTHORS.*", "*/AUTHORS.*", "CONTRIBUTORS", "*/CONTRIBUTORS",
+    "CONTRIBUTORS.*", "*/CONTRIBUTORS.*", "MAINTAINERS", "*/MAINTAINERS", "OWNERS", "*/OWNERS",
+    ".mailmap", "*/.mailmap",
 )
 
 
@@ -235,6 +239,100 @@ def author_domain_terms(repo: Path) -> list[str]:
             if label:
                 seen.setdefault(label, None)
     return list(seen)
+
+
+# ── Author names from git history (no NER) ────────────────────────────────────
+# The people who committed are the people whose names turn up in comments, strings
+# and messages with no `@author` tag in front of them. Their identities are read
+# from `git log` and redacted as literals everywhere (case-insensitive).
+_GENERIC_IDENTITY = frozenset(
+    {
+        "bot", "jenkins", "github", "gitlab", "bitbucket", "noreply", "admin", "administrator", "root",
+        "unknown", "ubuntu", "build", "system", "runner", "deploy", "release", "automation", "service",
+        "support", "info", "team", "dev", "test", "user", "git", "ci", "ec2", "svc", "server", "ops",
+        "devops", "jira", "gerrit", "sonar", "nobody", "anonymous", "default", "master", "main",
+    }
+)
+
+
+def _is_generic_identity(text: str) -> bool:
+    """Token-wise, so `Devendra`/`Gitanjali` are people but `ec2-user`/`ci-bot` are not."""
+    toks = [t for t in re.split(r"[^a-z]+", text.lower()) if t]
+    return not toks or any(t in _GENERIC_IDENTITY or t.endswith("bot") for t in toks)
+
+
+COMMON_WORDS = frozenset(
+    {
+        "about", "above", "after", "again", "agent", "alert", "alpha", "angel", "apple", "basic",
+        "begin", "being", "below", "black", "blank", "blind", "block", "board", "brain", "brown",
+        "build", "carry", "chain", "chart", "check", "chief", "child", "clean", "clear", "click",
+        "close", "cloud", "coach", "color", "count", "cover", "craft", "cross", "crown", "daily",
+        "dance", "delta", "depth", "dream", "drive", "early", "earth", "eight", "email", "empty",
+        "enter", "entry", "equal", "error", "event", "every", "extra", "field", "final", "first",
+        "flash", "float", "floor", "focus", "force", "frame", "fresh", "front", "grand", "grant",
+        "graph", "green", "group", "guard", "guest", "guide", "happy", "heart", "heavy", "hello",
+        "horse", "hotel", "house", "human", "hunter", "image", "index", "inner", "input", "issue",
+        "jordan", "judge", "known", "label", "large", "later", "layer", "learn", "least", "leave",
+        "level", "light", "limit", "local", "logic", "loose", "lower", "lucky", "major", "march",
+        "match", "mason", "maybe", "media", "merge", "metal", "might", "minor", "model", "month",
+        "mount", "mouse", "movie", "music", "never", "night", "noble", "noise", "north", "notes",
+        "novel", "other", "paper", "party", "patch", "peace", "phase", "phone", "photo", "piece",
+        "pilot", "pitch", "place", "plain", "plane", "plant", "point", "power", "press", "price",
+        "pride", "prime", "print", "prior", "proof", "queen", "quick", "quiet", "radio", "range",
+        "rapid", "ratio", "reach", "ready", "right", "river", "robot", "rough", "round", "route",
+        "royal", "scale", "scene", "scope", "score", "sense", "setup", "seven", "shape", "share",
+        "sharp", "sheet", "shift", "short", "sight", "since", "skill", "sleep", "small", "smart",
+        "smith", "solid", "solve", "sorry", "sound", "south", "space", "speed", "spend", "split",
+        "sport", "staff", "stage", "stand", "start", "state", "steam", "steel", "stick", "still",
+        "stock", "stone", "store", "storm", "story", "strip", "study", "style", "sugar", "super",
+        "sweet", "table", "taken", "taste", "teach", "thank", "their", "theme", "there", "thing",
+        "think", "third", "three", "throw", "tight", "title", "today", "token", "total", "touch",
+        "tower", "track", "trade", "train", "treat", "trend", "trial", "truck", "trust", "truth",
+        "twice", "under", "union", "unity", "until", "upper", "urban", "usage", "usual", "value",
+        "video", "visit", "voice", "waste", "watch", "water", "wheel", "where", "which", "while",
+        "white", "whole", "whose", "woman", "world", "worry", "worth", "would", "write", "wrong",
+        "young", "youth",
+    }
+)
+
+
+def author_name_terms(repo: Path, mode: str = "full", *, limit: int = 1500) -> list[str]:
+    """Literals for the people in `git log`: full names (+ first.last / first_last /
+    `Last, First` forms) and email handles. mode "all" also adds single first/last name
+    tokens of 5+ letters that are not common English words; "off" returns []."""
+    if mode == "off":
+        return []
+    out = run(["git", "log", "--all", "--format=%an%x09%ae%n%cn%x09%ce"], cwd=repo).stdout
+    freq: dict[str, int] = {}
+    spell: dict[str, str] = {}
+    for line in out.splitlines():
+        name, _, email = line.partition("\t")
+        name = re.sub(r"\s+", " ", name).strip()
+        cands: list[str] = []
+        if name and "@" not in name and not _is_generic_identity(name):
+            toks = re.findall(r"[^\W\d_]{2,}", name)
+            if len(toks) >= 2 and len(" ".join(toks)) >= 5:
+                first, last = toks[0], toks[-1]
+                cands += [" ".join(toks), f"{first} {last}", f"{last}, {first}", f"{first}.{last}", f"{first}_{last}"]
+                if len(first + last) >= 8:
+                    cands.append(f"{first}{last}")
+            elif mode == "all" and len(toks) == 1:
+                cands.append(toks[0])
+            if mode == "all":
+                cands += [t for t in toks if len(t) >= 5 and t.lower() not in COMMON_WORDS]
+        if "@" in email:
+            lp = email.split("@", 1)[0].split("+", 1)[0]
+            if (len(lp) >= 5 and re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]+", lp)
+                    and not _is_generic_identity(lp)
+                    and (re.search(r"[._-]", lp) or len(lp) >= 6)):
+                cands.append(lp)
+        for c in cands:
+            c = c.strip()
+            if len(c) >= 5 and c.lower() not in BRAND_STOPWORDS and c.lower() not in NOISE_TERMS:
+                freq[c.lower()] = freq.get(c.lower(), 0) + 1
+                spell.setdefault(c.lower(), c)
+    ranked = sorted(freq, key=lambda k: -freq[k])
+    return [spell[k] for k in ranked[:limit]]
 
 
 # ── Company name from copyright headers ───────────────────────────────────────
@@ -400,7 +498,10 @@ def _collides_with_pseudonyms(term: str, terms: list[str]) -> bool:
     """A term that occurs inside `ANON_ORG_<hash>` (or any other pseudonym) would match
     its own replacement, so apply-map's re-check can never pass (`non` in `ANON_ORG`)."""
     t = term.lower()
-    return any(t in brand_pseudonym(o).lower() for o in terms) or t in "anon_org_"
+    return (
+        any(t in brand_pseudonym(o).lower() or t in person_pseudonym(o).lower() for o in terms)
+        or t in "anon_org_" or t in "anon_per_"
+    )
 
 
 def brand_worklist_terms(
@@ -408,6 +509,7 @@ def brand_worklist_terms(
     extra_terms: tuple[str, ...] = (),
     *,
     seeds: tuple[str, ...] = (),
+    person_seeds: tuple[str, ...] = (),
     use_worklist: bool = True,
 ) -> list[str]:
     """Brand terms to map.
@@ -439,6 +541,10 @@ def brand_worklist_terms(
         seed = seed.strip()
         if seed:
             terms.setdefault(seed.lower(), seed)
+    for p in person_seeds:                          # git author names: verbatim, after the company
+        p = p.strip()
+        if p:
+            terms.setdefault(p.lower(), p)
     for raw in ([*spans, *extra_terms] if use_worklist else list(extra_terms)):
         for token in _BRAND_TOKEN.findall(raw):
             low = token.lower()
@@ -478,13 +584,20 @@ def brand_pseudonym(term: str) -> str:
     return f"ANON_ORG_{digest}"
 
 
-def write_brand_map(terms: list[str], work_root: Path) -> Path:
-    """Pass-2: deterministic brand map (literal, case-insensitive rows)."""
+def person_pseudonym(term: str) -> str:
+    salt = os.environ.get("REPO_SANITIZER_SALT", "")
+    digest = hashlib.sha256(f"{salt}:per:{term.lower()}".encode()).hexdigest()[:12]
+    return f"ANON_PER_{digest}"
+
+
+def write_brand_map(terms: list[str], work_root: Path, person: frozenset[str] = frozenset()) -> Path:
+    """Pass-2: deterministic brand map (literal, case-insensitive rows). Terms whose
+    lower-case form is in `person` map to ANON_PER_<hash>, the rest to ANON_ORG_<hash>."""
     work_root.mkdir(parents=True, exist_ok=True)
     rows = [
         {
             "pattern": term,
-            "replacement": brand_pseudonym(term),
+            "replacement": person_pseudonym(term) if term.lower() in person else brand_pseudonym(term),
             "is_regex": False,
             "preserve_case": False,
         }
@@ -590,7 +703,47 @@ def assert_no_secrets(clean: Path, work_root: Path) -> int:
     return ignored
 
 
-def package_deliverable(work_root: Path, repo_slug: str) -> Path:
+def residual_scan(clean: Path, rules: Path, *, per_rule_cap: int = 25) -> dict:
+    """Re-apply the rulepack's patterns to the FINISHED tree and history head: anything
+    that still matches is a miss. Report-only (never blocks) and value-free: just
+    rule, file and line, so the report itself carries no PII."""
+    import yaml
+
+    pats = yaml.safe_load((rules / "regex" / "pii_patterns.yaml").read_text())["patterns"]
+    compiled = []
+    for p in pats:
+        try:
+            compiled.append((p["name"], re.compile(p["pattern"], re.M)))
+        except re.error:
+            continue
+    skip = ("REDACTED_", "ANON_ORG_", "ANON_PER_", "example.invalid", "203.0.113.", "2001:db8")
+    counts: dict[str, int] = {}
+    samples: dict[str, list[dict]] = {}
+    files = run(["git", "ls-files", "-z"], cwd=clean).stdout.split("\0")
+    for rel in filter(None, files):
+        path = clean / rel
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            raw = path.read_bytes()
+            if b"\0" in raw[:8192]:
+                continue
+            text = raw.decode("utf-8", "replace")
+        except OSError:
+            continue
+        for name, rx in compiled:
+            for m in rx.finditer(text):
+                val = m.group(1) if (m.groups() and m.group(1)) else m.group()
+                if any(k in val for k in skip) or name in {"credit_card"}:
+                    continue
+                counts[name] = counts.get(name, 0) + 1
+                lst = samples.setdefault(name, [])
+                if len(lst) < per_rule_cap:
+                    lst.append({"file": rel, "line": text.count("\n", 0, m.start()) + 1})
+    return {"total": sum(counts.values()), "by_rule": dict(sorted(counts.items(), key=lambda kv: -kv[1])), "samples": samples}
+
+
+def package_deliverable(work_root: Path, repo_slug: str, residual: dict | None = None) -> Path:
     clean = work_root / "clean"
     zip_name = f"{repo_slug}_sanitized.zip"
     zip_path = work_root / zip_name
@@ -627,6 +780,10 @@ def package_deliverable(work_root: Path, repo_slug: str) -> Path:
         ),
         "sanitizer_bundle_sha256": bundle_sha,
         "secret_scan": "gitleaks.json",
+        "residual_scan": (
+            {"total": residual["total"], "by_rule": residual["by_rule"], "details": "RESIDUAL.json"}
+            if residual is not None else None
+        ),
         "zip": zip_name,
     }
     (work_root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")

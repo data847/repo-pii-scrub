@@ -510,3 +510,60 @@ patterns:
     pattern: '(?i)(?<=_postman_id": ")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=_postman_id":")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=Postman-Token", "value": ")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<=Postman-Token","value":")[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
     category: SECRET
     severity: LOW
+
+
+  # ════════════════════════════════════════════════════════════════
+  # Round 2 (audit follow-ups). NOTE on names: the scrubber routes some rules by
+  # NAME to value-only masking (it keeps the surrounding key/syntax). Rules below
+  # that must keep their key reuse those names on purpose:
+  #   phone_ru_keyed -> mask group 1, keep the rest      (TODO(name), keyed phones)
+  #   cli_password   -> mask group 1, keep the rest      (db user / db name / ssh host)
+  #   db_connection_amqp -> mask the URL HOST only       (spark:// ssh:// git:// …)
+  # ════════════════════════════════════════════════════════════════
+
+  - name: credit_tag_name
+    # Names after attribution phrases other than @author: `Written by Jane Doe`,
+    # `Modified by: j.doe`, `Reviewed-by Jane`, `Signed-off-by`, `Maintainer: Jane`.
+    # First token must be Capitalised or dotted (j.doe) so "updated by default" survives.
+    pattern: '(?i:\b(?:written|developed|modified|updated|reviewed|authored|maintained|contributed|reported|tested|acked|signed[- ]off|co-authored)[ -]by|\b(?:maintainer|owner|contact|credits?))[ \t]*:?[ \t]+(?:[A-Z][\w.''-]*|[a-z]+\.[a-z][\w.''-]*)(?:[ \t]+[A-Z][\w.''-]*){0,2}'
+    category: PII
+    severity: HIGH
+
+  - name: phone_ru_keyed
+    # TODO(jane): / FIXME(jane.doe) — the owner handle is a person; keep the marker.
+    pattern: '\b(?:TODO|FIXME|XXX|HACK|NOTE|BUG)[ \t]*\([ \t]*([A-Za-z][A-Za-z._-]{1,30})[ \t]*\)'
+    category: PII
+    severity: MEDIUM
+
+  - name: cli_password
+    # DB account in config keys: spring.datasource.username=root, DB_USER: admin,
+    # mysql.user = app. Value only.
+    pattern: '(?i)\b[\w.]*(?:db|database|datasource|jdbc|mysql|postgres(?:ql)?|mongo(?:db)?|redis|sql|oracle)[\w.]*[._-]?user(?:name)?\b["'']?[ \t]*[:=][ \t]*["'']?([A-Za-z0-9_.@-]{2,})'
+    category: SECRET
+    severity: HIGH
+
+  - name: cli_password
+    # DB account in a JDBC URL parameter: jdbc:mysql://h/db?user=root&password=…
+    pattern: '(?i)jdbc:[^\s"'']*?[?&;]user(?:name)?=([A-Za-z0-9_.@-]{2,})'
+    category: SECRET
+    severity: HIGH
+
+  - name: cli_password
+    # Database NAME in a connection URL: jdbc:mysql://host:3306/<name>, postgres://…/<name>.
+    # Generic names (test/postgres/db/…) are left.
+    pattern: '(?i)(?:jdbc:[a-z0-9]+|postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^/\s"''?]+/(?!(?:test|testdb|postgres|mysql|db|database|default|public|master|demo|sample|example|dev|local|admin)\b)([A-Za-z][A-Za-z0-9_$-]{2,})'
+    category: SECRET
+    severity: MEDIUM
+
+  - name: cli_password
+    # Host in an ssh/scp/sftp/rsync target: `ssh ec2-user@L-D6RQ542`, `scp f user@host:/p`.
+    pattern: '\b(?:ssh|scp|sftp|rsync)\b[^\n|;&]{0,80}?[ \t][A-Za-z0-9._-]+@(?!example\.invalid)([A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9])(?=[:\s"'']|$)'
+    category: ENDPOINT
+    severity: MEDIUM
+
+  - name: db_connection_amqp
+    # Other service URLs: spark://L-D6RQ542:7077, ssh://host, git://host/x, kafka://…
+    # (name reused so the scrubber masks only the host and keeps scheme/port/path).
+    pattern: '\b(?:spark|ssh|git|ftp|sftp|scp|ws|wss|kafka|hdfs|nats|mqtt|ldaps?|smtps?|rtmp|tcp)://[^\s"''<>]+'
+    category: ENDPOINT
+    severity: MEDIUM

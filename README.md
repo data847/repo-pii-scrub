@@ -76,10 +76,13 @@ Set these once at the start (`init`, or `run_batch.py` flags that pass through t
 | `--domain acme.com` (repeatable) | The domain and its name label (`acme`) are both redacted, so `test.acme.com` and `stage.acme.com` become `test.ANON_ORG_….com`. |
 | `--prune GLOB` (repeatable) | Extra path deleted from **all history before redaction**. A trailing `/` means a directory at any depth. |
 | `--no-default-prune` | Keep the default prune set. |
+| `--author-names full\|all\|off` | Redact the names of git authors wherever they appear in text, with no NER. `full` (default): `First Last` forms and email handles; `all`: also single first/last names of 5+ letters that are not common words. |
 | `--no-auto-domains` | Do not derive brand terms from commit author email domains. |
 
 By default the company is also derived from author email domains (free-mail,
 GitHub/GitLab and `example`/`localhost` domains are ignored).
+
+Every run also ends with a **residual scan**: the finished tree is re-checked against all the rules and `RESIDUAL.json` lists any file and line that still matches (no values), with a summary in `MANIFEST.json`. It reports only and never blocks.
 
 **Default prune set** (removed from every commit, before any scrubbing, in a copy
 of the source): `*.sql *.csv *.tsv *.xml *.log *.dump`, vendored library directories

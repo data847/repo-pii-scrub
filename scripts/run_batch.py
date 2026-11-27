@@ -297,6 +297,7 @@ def main() -> int:
     p.add_argument("--domain", action="append", default=[], help="Company domain (repeatable)")
     p.add_argument("--prune", action="append", default=[], help="Extra path/glob to delete from history first (repeatable; `dir/` = any-depth directory)")
     p.add_argument("--no-default-prune", action="store_true", help="Keep csv/sql/log files and vendored library code")
+    p.add_argument("--author-names", choices=["full", "all", "off"], default="full", help="Redact git author names found in text: full (default) | all (also single names) | off")
     p.add_argument("--no-auto-domains", action="store_true", help="Do not derive brand terms from author email domains")
     args = p.parse_args()
 
@@ -347,6 +348,7 @@ def main() -> int:
         init_args.append("--no-default-prune")
     if args.no_auto_domains:
         init_args.append("--no-auto-domains")
+    init_args += ["--author-names", args.author_names]
 
     worker_env = worker_env_from(env)
 

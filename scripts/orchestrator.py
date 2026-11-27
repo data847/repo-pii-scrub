@@ -29,6 +29,8 @@ from state import init_run, load, save  # noqa: E402
 from steps import (  # noqa: E402
     apply_brand_map,
     author_domain_terms,
+    author_name_terms,
+    residual_scan,
     company_terms,
     copyright_terms,
     prune_history,
@@ -91,6 +93,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "company_terms": company_terms(args.company, args.domain),
             "prune_globs": prune_patterns(args.prune, defaults=not args.no_default_prune),
             "auto_domains": not args.no_auto_domains,
+            "author_names": args.author_names,
         },
     )
     print(json.dumps({"run_dir": str(run_dir), **state}, indent=2))
@@ -117,6 +120,8 @@ def cmd_clone(args: argparse.Namespace) -> int:
     if state.get("auto_domains", True):
         # Author-email domains + legal entity names from copyright headers.
         state["auto_brand_terms"] = [*author_domain_terms(dest), *copyright_terms(dest)]
+    # People from git history, redacted wherever their names appear (no NER needed).
+    state["auto_person_terms"] = author_name_terms(dest, state.get("author_names", "full"))
     mark_gate(state_path, state, "clone", "sanitize")
     print("\n=== GATE 1 COMPLETE: CLONE ===")
     print(json.dumps({"source": str(dest), **baseline}, indent=2))
@@ -149,7 +154,8 @@ def cmd_sanitize(args: argparse.Namespace) -> int:
 
     # Normal mode always continues into Pass-2/Pass-3, which is where the clean
     # clone is materialized. Fast mode has no brand pass.
-    if not _fast(state) or state.get("company_terms") or state.get("auto_brand_terms"):
+    if (not _fast(state) or state.get("company_terms") or state.get("auto_brand_terms")
+            or state.get("auto_person_terms")):
         state["brand_worklist"] = worklist
         mark_gate(state_path, state, "sanitize", "brand")
         print("\n=== GATE 2 COMPLETE: SANITIZE ===")
@@ -182,6 +188,7 @@ def cmd_brand_map(args: argparse.Namespace) -> int:
         sanitized,
         extra_terms=tuple(args.term or ()),
         seeds=(*state.get("company_terms", []), *state.get("auto_brand_terms", [])),
+        person_seeds=tuple(state.get("auto_person_terms", [])),
         use_worklist=not _fast(state),
     )
 
@@ -191,7 +198,8 @@ def cmd_brand_map(args: argparse.Namespace) -> int:
         mark_gate(state_path, state, "brand", "package")
         return 0
 
-    brand_map = write_brand_map(terms, run_dir)
+    person = frozenset(t.lower() for t in state.get("auto_person_terms", []))
+    brand_map = write_brand_map(terms, run_dir, person)
     print(f"Pass-2 brand map ({len(terms)} terms): {brand_map}")
     for term in terms:
         print(f"  {term} -> {brand_pseudonym(term)}")
@@ -219,7 +227,12 @@ def cmd_package(args: argparse.Namespace) -> int:
     ignored = assert_no_secrets(run_dir / "clean", run_dir)
     print(f"Secret scan clean ({ignored} redaction placeholders ignored)")
 
-    zip_path = package_deliverable(run_dir, state["repo_slug"])
+    residual = residual_scan(run_dir / "clean", Path(state["rulepack"]))
+    (run_dir / "RESIDUAL.json").write_text(json.dumps(residual, indent=2) + "\n")
+    print(f"Residual scan: {residual['total']} possible misses "
+          f"({', '.join(f'{k}={v}' for k, v in list(residual['by_rule'].items())[:8]) or 'none'}) -> RESIDUAL.json")
+
+    zip_path = package_deliverable(run_dir, state["repo_slug"], residual)
     mark_gate(state_path, state, "package", "done")
     print("\n=== GATE 3 COMPLETE: PACKAGE ===")
     print(f"Zip: {zip_path}")
@@ -258,6 +271,10 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument("--no-default-prune", action="store_true",
                         help="Do not prune the default set (*.sql *.csv *.tsv *.xml *.log *.dump, vendored "
                              "library dirs, *.min.js/css)")
+    init_p.add_argument("--author-names", choices=["full", "all", "off"], default="full",
+                        help="Redact the names of git authors wherever they appear in text (no NER): "
+                             "full = 'First Last' forms and email handles (default); all = also single "
+                             "first/last names of 5+ letters; off = none")
     init_p.add_argument("--no-auto-domains", action="store_true",
                         help="Do not derive brand terms from commit author email domains")
     init_p.add_argument("--env-file")
