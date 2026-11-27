@@ -492,8 +492,9 @@ patterns:
     # RFC 1918 addresses (10/8, 172.16/12, 192.168/16): the engine keeps these so
     # builds survive, but they expose production topology (Kafka brokers, DB hosts,
     # internal git). Masked to REDACTED_PRIVATE_IPV4_<hash>; loopback / 0.0.0.0 stay.
-    # Not followed by `.digit` so 5-part strings and OIDs are skipped.
-    pattern: '(?<![0-9A-Za-z.])(?:10\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|172\.(?:1[6-9]|2\d|3[01])\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|192\.168\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d))(?![0-9]|\.[0-9])'
+    # Skipped: 5-part strings/OIDs, and version strings (`version=10.2.0.1`, `==10.2.0.1`,
+    # `<version>…</version>`, `-10.2.0.1.jar`, `v10.2.0.1`, `x-10.2.0.1`).
+    pattern: '(?i)(?<![0-9A-Za-z._-])(?<![=><~]=)(?<!~>)(?<!\^)(?<!version>)(?<!version=)(?<!version=")(?<!version='')(?<!version:)(?<!version: )(?<!version": ")(?<!version":")(?<!ersion=\s)(?:10\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|172\.(?:1[6-9]|2\d|3[01])\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d)|192\.168\.(?:25[0-5]|2[0-4]\d|1?\d?\d)\.(?:25[0-5]|2[0-4]\d|1?\d?\d))(?![0-9]|\.[0-9])(?!\.(?:jar|zip|tar|gz|tgz|war|so|dll|pom|exe|msi|rpm|deb|whl|egg|nupkg)\b)(?![-_][A-Za-z])(?!</version>)'
     category: ENDPOINT
     severity: HIGH
 
